@@ -435,7 +435,11 @@ function addConnectedFolder(path) {
     return { ok: false, error: 'config_unreadable' };
   }
   const next = [...(Array.isArray(config.WORKDIRS) ? config.WORKDIRS : []), path];
-  const verdict = validateEnvChanges({ WORKDIRS: next }, {
+  // 只校验**这一条**：既有条目是上次写入时的状态，它们坏了不该把「加一个新文件夹」永久卡死
+  // （实测：更早的盘符浏览写下了 "C:" / "D:" 这类盘符相对别名，之后每次添加都只报「收到：C:」，
+  // 而手机上没有任何入口能改它）。整表校验留给 env:set——用户下一次在设置里保存整份清单时会看到
+  // 具体哪条要改；坏的条目读侧本来就会 warn-skip（workdirs.js resolveWorkdirs）。
+  const verdict = validateEnvChanges({ WORKDIRS: [path] }, {
     current: structuredToStringValues(config), fileExists: existsSync, isExecutable: () => true, probePort: () => false, usingConfigJson: true,
   });
   if (!verdict.ok) return { ok: false, error: 'invalid', message: verdict.results.find(r => r.level === 'error')?.message ?? '' };
