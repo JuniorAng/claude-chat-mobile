@@ -48,7 +48,7 @@ test('folderReasonText：服务端的原因码都有人话，未知码回落「�
   const { folderReasonText, FOLDER_REASON_CODES } = await import('../../app/public/js/logic/projects.js');
   setLang('zh');
   // 服务端（sessions/folders.js、app.js addConnectedFolder / removeConnectedFolder、socket-folders.js）会回的每一个码
-  for (const code of ['home', 'root', 'outside_home', 'forbidden', 'worktree', 'already_connected', 'not_found', 'not_directory',
+  for (const code of ['home', 'root', 'too_broad', 'outside_home', 'forbidden', 'worktree', 'already_connected', 'not_found', 'not_directory',
     'no_config_file', 'source_readonly', 'config_unreadable', 'write_failed', 'not_applied', 'invalid', 'not_connected',
     'nothing_removable', 'legacy_workdir', 'device_not_approved',
     'exists', 'hidden', 'separator', 'control', 'too_long', 'empty', 'out_of_range', 'mkdir_failed', 'unreadable']) {

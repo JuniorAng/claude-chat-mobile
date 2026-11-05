@@ -6,8 +6,10 @@
 // 那条规则就不存在：元素静默没有样式，不报错，E2E 也只在恰好断言了那个计算样式时才红。
 // 此前用的 Play CDN 在浏览器里现编，不会有这个缺口；换成预编译后它要靠这道闸补上。
 //
-// 判据是逐字节相等：重编走 build:css 同一个 CLI、同一份配置，只是输出到 stdout。产物只取决于锁死的
+// 判据是内容逐字节相等：重编走 build:css 同一个 CLI、同一份配置，只是输出到 stdout。产物只取决于锁死的
 // tailwindcss 版本与输入——autoprefixer 及其 browserslist 数据都打包在 tailwindcss/peers 里，不读 node_modules 别处。
+// 行尾先归一：Windows 上 core.autocrlf 把工作树检成 CRLF，而 CLI 现编给 LF——那只是检出格式，
+// 不是产物内容；不归一的话这道闸在原生 Windows 上永远红。
 import { spawnSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
@@ -17,6 +19,7 @@ import { fileURLToPath } from 'node:url';
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..', '..');
 const OUTPUT = 'app/public/css/tw.css';
 const CLI = createRequire(import.meta.url).resolve('tailwindcss/lib/cli.js');
+const normalizeEol = text => text.replace(/\r\n/g, '\n');
 
 // rootDir 缺省不传：单测传临时目录夹具，CLI 入口用真实 ROOT。
 export function checkTailwindCss({ rootDir = ROOT } = {}) {
@@ -31,11 +34,12 @@ export function checkTailwindCss({ rootDir = ROOT } = {}) {
     return { problems: [`Tailwind CLI 编译失败（${r.error ? r.error.message : `退出码 ${r.status}`}）：${(r.stderr || '').trim()}`] };
   }
 
-  const committed = readFileSync(join(rootDir, OUTPUT), 'utf8');
-  if (committed === r.stdout) return { problems: [] };
+  const committed = normalizeEol(readFileSync(join(rootDir, OUTPUT), 'utf8'));
+  const generated = normalizeEol(r.stdout);
+  if (committed === generated) return { problems: [] };
 
   const a = committed.split('\n');
-  const b = r.stdout.split('\n');
+  const b = generated.split('\n');
   let i = 0;
   while (i < a.length && i < b.length && a[i] === b[i]) i++;
   return {

@@ -643,8 +643,10 @@ function mockDirFields() {
   return { dirs, projects, scratchRoot: MOCK_SCRATCH_ROOT, foldersReadonly: mockFoldersAddError, autoModeDisabled: mockAutoModeDisabled };
 }
 
-// 「选文件夹」面板的假家目录（只有目录名，同真 server 的 folders:browse）。键 = 家目录相对路径。
+// 「选文件夹」面板的假文件系统（只有目录名，同真 server 的 folders:browse）。键：家目录相对路径，
+// 或以 / 开头的绝对路径（家目录外的那块，模拟 Windows 上的另一块盘 / 另一个挂载点）。
 const MOCK_HOME = '/Users/you';
+const MOCK_EXTRA_ROOT = '/Volumes/Data';
 // 放在仓库里面的 linked worktree（`git worktree add ./wt-feat-z`）：挑子文件夹时看得到它。它归仓库这个项目，
 // 所以在它上面开新会话时 viewingCwd 是仓库，首条消息的目标另由 composeCwd 带（同真 server）。
 const MOCK_REPO_WORKTREES = new Map([[`${MOCK_HOME}/code/claude-chat-mobile/wt-feat-z`, `${MOCK_HOME}/code/claude-chat-mobile`]]);
@@ -661,6 +663,9 @@ function createMockFolderTree() {
     'code/claude-chat-mobile-feat-y': [],
     'code/new-idea': [],
     Documents: [],
+    [MOCK_EXTRA_ROOT]: ['Projects'],
+    [`${MOCK_EXTRA_ROOT}/Projects`]: ['demo-app'],
+    [`${MOCK_EXTRA_ROOT}/Projects/demo-app`]: [],
   };
 }
 let mockFolderTree = createMockFolderTree();
@@ -671,15 +676,33 @@ let mockAutoModeDisabled = false; // /__arm-auto-mode-disabled：本区 settings
 let mockMcpLive = null;
 let mockMcpLog = []; // 每条 mcp:* 请求的 { event, instanceId, name }：断言处置落在哪个实例上（#467 review）
 let mockMcpReconnectTries = 0;
-const mockFolderAbs = rel => (rel ? `${MOCK_HOME}/${rel}` : MOCK_HOME);
-function mockFolderReason(rel) {
-  if (!Object.hasOwn(mockFolderTree, rel)) return 'not_found';
-  if (rel === '') return 'home';
+// 面板发来的位置：'' / 相对路径（家目录为根）/ 绝对路径（家目录内外都行）。
+// 树里的键统一成「家目录相对路径，或家目录外的绝对路径」。
+function mockFolderKey(p) {
+  if (typeof p !== 'string') return null;
+  if (p === '') return '';
+  if (p === MOCK_HOME) return '';
+  if (p.startsWith(`${MOCK_HOME}/`)) return p.slice(MOCK_HOME.length + 1);
+  return p;
+}
+const mockFolderAbs = key => (key ? (key.startsWith('/') ? key : `${MOCK_HOME}/${key}`) : MOCK_HOME);
+// 上一级：家目录与家目录外的挂载点都当成浏览起点（上一级是「此电脑」）；其余按 / 切。
+function mockFolderParent(key) {
+  if (key === '' || key === MOCK_EXTRA_ROOT) return null;
+  const i = key.lastIndexOf('/');
+  return i < 0 ? '' : key.slice(0, i);
+}
+function mockFolderChildKey(key, name) {
+  return key ? `${key}/${name}` : name;
+}
+function mockFolderReason(key) {
+  if (!Object.hasOwn(mockFolderTree, key)) return 'not_found';
+  if (key === '') return 'home';
   // 「worktree」只拦仓库 .claude/worktrees 下 Claude Code 建的（同真 server），点目录不进浏览清单，这里碰不到
-  if (mockDirs().includes(mockFolderAbs(rel))) return 'already_connected';
+  if (mockDirs().includes(mockFolderAbs(key))) return 'already_connected';
   return null;
 }
-const mockFolderRelOk = rel => typeof rel === 'string' && !rel.startsWith('/') && !rel.split('/').includes('..');
+const mockFolderPathOk = p => typeof p === 'string' && !p.split(/[/\\]/).includes('..');
 
 // 场景抛错的账：registry 每个连接各建一份，所以记在模块级。/__reset 清空，E2E 收尾经 /__scenario-errors 断言为空。
 let mockScenarioErrors = [];
@@ -3585,27 +3608,35 @@ io.on('connection', socket => {
   });
 
   // 手机上添加 / 新建文件夹（FOLDER-01）。真 server 走 sessions/folders.js 判据 + 写配置文件；
-  // mock 用一棵只有目录名的假家目录树，判据只保留面板要画的几种原因（家目录 / 已连接 / worktree）。
+  // mock 用一棵只有目录名的假文件系统，判据只保留面板要画的几种原因（家目录 / 已连接 / worktree）。
+  // 家目录之外的挂载点用绝对路径，模拟用户在 Windows 上从「此电脑」进 D:。
   socket.on('folders:browse', (payload, ack) => {
     if (typeof ack !== 'function') return;
-    const rel = payload?.path ?? '';
-    if (!mockFolderRelOk(rel) || !Object.hasOwn(mockFolderTree, rel)) return ack({ ok: false, error: 'out_of_range' });
+    const key = mockFolderKey(payload?.path ?? '');
+    if (key == null || !mockFolderPathOk(key) || !Object.hasOwn(mockFolderTree, key)) return ack({ ok: false, error: 'not_found' });
+    const parent = mockFolderParent(key);
     ack({
-      ok: true, home: MOCK_HOME, path: rel, reason: mockFolderReason(rel),
-      entries: mockFolderTree[rel].map(name => ({ name, reason: mockFolderReason(rel ? `${rel}/${name}` : name) })),
+      ok: true, home: MOCK_HOME, path: mockFolderAbs(key),
+      parent: parent == null ? null : mockFolderAbs(parent),
+      roots: [{ name: 'Data', path: MOCK_EXTRA_ROOT }],
+      reason: mockFolderReason(key),
+      entries: mockFolderTree[key].map(name => {
+        const child = mockFolderChildKey(key, name);
+        return { name, path: mockFolderAbs(child), reason: mockFolderReason(child) };
+      }),
       truncated: false,
     });
   });
   socket.on('folders:add', (payload, ack) => {
     if (typeof ack !== 'function') return;
-    const rel = payload?.path;
-    if (!mockFolderRelOk(rel)) return ack({ ok: false, error: 'not_found' });
-    const reason = mockFolderReason(rel);
+    const key = mockFolderKey(payload?.path);
+    if (key == null || !mockFolderPathOk(key)) return ack({ ok: false, error: 'not_found' });
+    const reason = mockFolderReason(key);
     // 已经是连接根：「在这里开始会话」照常往下走，不重复添加（同真 server 的 folders:add）
     if (reason === 'already_connected') return ack({ ok: true, added: false, dirs: mockDirs() });
     if (reason) return ack({ ok: false, error: reason });
     if (mockFoldersAddError) return ack({ ok: false, error: mockFoldersAddError });
-    mockAddedFolders.push(mockFolderAbs(rel));
+    mockAddedFolders.push(mockFolderAbs(key));
     io.emit('agent:event', {
       seq: 0, epoch: 'server', sessionId: null, ts: Date.now(),
       type: 'instances', payload: { canRestart: mockCanRestart,
@@ -3670,18 +3701,18 @@ io.on('connection', socket => {
   });
   socket.on('folders:mkdir', (payload, ack) => {
     if (typeof ack !== 'function') return;
-    const rel = payload?.path ?? '';
+    const key = mockFolderKey(payload?.path ?? '');
     const name = payload?.name;
     if (typeof name !== 'string' || !name) return ack({ ok: false, error: 'empty' });
     if (name.startsWith('.')) return ack({ ok: false, error: 'hidden' });
     if (name.includes('/')) return ack({ ok: false, error: 'separator' });
-    if (!mockFolderRelOk(rel) || !Object.hasOwn(mockFolderTree, rel)) return ack({ ok: false, error: 'out_of_range' });
-    if (mockFolderTree[rel].includes(name)) return ack({ ok: false, error: 'exists' });
+    if (key == null || !mockFolderPathOk(key) || !Object.hasOwn(mockFolderTree, key)) return ack({ ok: false, error: 'out_of_range' });
+    if (mockFolderTree[key].includes(name)) return ack({ ok: false, error: 'exists' });
     // 同真 server：清单改不了时只能建在已连接的文件夹里（之外建出来的加不进清单，验收 O41）
-    const parentAbs = mockFolderAbs(rel);
+    const parentAbs = mockFolderAbs(key);
     if (mockFoldersAddError && !mockDirs().some(d => parentAbs === d || parentAbs.startsWith(`${d}/`))) return ack({ ok: false, error: mockFoldersAddError });
-    const child = rel ? `${rel}/${name}` : name;
-    mockFolderTree[rel] = [...mockFolderTree[rel], name].sort();
+    const child = mockFolderChildKey(key, name);
+    mockFolderTree[key] = [...mockFolderTree[key], name].sort();
     mockFolderTree[child] = [];
     ack({ ok: true, path: mockFolderAbs(child) });
   });

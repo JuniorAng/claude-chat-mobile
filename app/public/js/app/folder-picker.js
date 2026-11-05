@@ -3,8 +3,9 @@
 // 照官方桌面端新会话的文件夹选择：
 //   · 已连接的文件夹：点一行就在那里开新会话；「›」进去挑子文件夹、就地新建；
 //   · 无文件夹：一次性目录，首条消息时服务端才建；
-//   · 添加文件夹：浏览家目录，只看得到目录名，不能加的置灰并写明原因；「在这里开始会话」先连上再开
-//     （已经连着的不重复加，「已经连接」只是提示），就地新建的也直接连上、在里面开（2026-10-15）。
+//   · 添加文件夹：浏览整台电脑（2026-11-05 起），只看得到目录名，不能加的置灰并写明原因；「在这里开始会话」
+//     先连上再开（已经连着的不重复加，「已经连接」只是提示），就地新建的也直接连上、在里面开（2026-10-15）。
+//     Windows 上从「此电脑」列盘符进别的盘；协议里的位置是绝对路径，'' = 家目录。
 // 开合走 sheets 原语；数据只走 folders:browse / folders:add / folders:mkdir 三条事件，判据全在服务端
 // （FOLDER-01）——这里不替服务端判断能不能加，只把它的原因码翻成人话。
 import { t } from '../i18n.js';
@@ -18,7 +19,9 @@ export function createFolderPicker({ $, el, socket, openSheet, closeSheet, hapti
   const title = $('folderPickerTitle');
   const back = $('folderPickerBack');
   const status = $('folderPickerStatus');
-  let home = null; // 家目录的真实路径：首次浏览时由服务端告知（位置在协议里一律是家目录相对的）
+  let home = null; // 家目录的真实路径：服务端在每次浏览回执里给，用来把家目录内的绝对路径显示成 ~/…
+  let roots = []; // 可跳转的文件系统根（Windows 盘符 / POSIX 的 /）
+  let rootsReturn = null; // 进「此电脑」前那一屏：返回键回到它，而不是一脚踢出添加流程
   let view = { mode: 'root' };
   let gen = 0; // 浏览请求代次：快速连点时只认最后一次的回执
 
@@ -28,8 +31,17 @@ export function createFolderPicker({ $, el, socket, openSheet, closeSheet, hapti
     socket.emit(event, payload, res => done(res || { ok: false }));
     setTimeout(() => done({ ok: false }), ACK_TIMEOUT_MS);
   });
-  const relOf = abs => (home ? relPathUnder(abs, home) : null);
-  const absOf = rel => (rel ? `${home}/${rel}` : home);
+  // 家目录内显示 ~/…，家目录外显示绝对路径（Windows 上就是 D:\…）。
+  const displayPath = p => {
+    if (!home || !p) return p || '';
+    if (p === home) return '~';
+    const rel = relPathUnder(p, home);
+    return rel == null ? p : (rel ? `~/${rel}` : '~');
+  };
+  const applyAck = r => {
+    home = r.home;
+    if (Array.isArray(r.roots)) roots = r.roots;
+  };
 
   function setStatus(text) {
     status.textContent = text || '';
@@ -77,6 +89,7 @@ export function createFolderPicker({ $, el, socket, openSheet, closeSheet, hapti
 
   function renderRoot() {
     view = { mode: 'root' };
+    rootsReturn = null;
     gen += 1;
     title.textContent = t('选择文件夹');
     back.classList.add('hidden');
@@ -93,7 +106,7 @@ export function createFolderPicker({ $, el, socket, openSheet, closeSheet, hapti
     // 手机上改不了清单时同抽屉的「选择文件夹」（验收 O41 / O129）：置灰，原因写在副标题里，不给一个走进去才被拒的入口
     const readonly = getFoldersReadonly();
     body.appendChild(row({
-      icon: '＋', label: t('添加文件夹'), sub: readonly ? folderReasonText(readonly) : t('从家目录里选一个文件夹连接进来'), testid: 'folder-picker-add',
+      icon: '＋', label: t('添加文件夹'), sub: readonly ? folderReasonText(readonly) : t('从电脑里选一个文件夹连接进来'), testid: 'folder-picker-add',
       muted: Boolean(readonly), disabled: Boolean(readonly),
       onClick: () => enterBrowse('add', null),
     }));
@@ -108,39 +121,64 @@ export function createFolderPicker({ $, el, socket, openSheet, closeSheet, hapti
     }
   }
 
-  // purpose：pick = 在已连接的文件夹里挑子文件夹开会话；add = 在家目录里挑一个加进来。
+  // purpose：pick = 在已连接的文件夹里挑子文件夹开会话；add = 在电脑上挑一个加进来。
+  // startAbs：挑子文件夹时的起点（已连接的文件夹，绝对路径）；往回走不越过它。add 时 null = 不设起点。
   async function enterBrowse(purpose, startAbs) {
     if (!home) {
       const r = await emit('folders:browse', { path: '' });
       if (!r?.ok) { setStatus(folderReasonText(r?.error)); return; }
-      home = r.home;
+      applyAck(r);
     }
-    const rel = startAbs == null ? '' : relOf(startAbs);
-    if (rel == null) { setStatus(t('这个文件夹不在家目录里，看不了它的子文件夹')); return; }
-    await browse(purpose, rel, rel);
+    await browse(purpose, startAbs == null ? '' : startAbs, startAbs);
   }
 
-  async function browse(purpose, rel, startRel) {
+  // 此电脑：列盘符（Windows）或根（POSIX）。只在 add 流程里出现——挑子文件夹时不越过已连接的根。
+  function renderRoots() {
+    rootsReturn = view.mode === 'browse' ? view : null;
+    view = { mode: 'roots' };
+    gen += 1;
+    title.textContent = t('此电脑');
+    back.classList.remove('hidden');
+    body.innerHTML = '';
+    setStatus('');
+    const head = el('<div class="px-4 pt-3 pb-1 text-[10px] uppercase tracking-wide text-ink-faint"></div>');
+    head.textContent = t('磁盘');
+    body.appendChild(head);
+    if (!roots.length) {
+      const empty = el('<div class="px-4 py-4 text-xs text-ink-faint"></div>');
+      empty.textContent = t('没有可浏览的磁盘');
+      body.appendChild(empty);
+      return;
+    }
+    for (const r of roots) {
+      body.appendChild(row({
+        icon: '💽', label: r.name || r.path, sub: r.path, testid: 'folder-picker-root',
+        onClick: () => browse('add', r.path, null),
+      }));
+    }
+  }
+
+  async function browse(purpose, path, startPath) {
     const my = ++gen;
-    const r = await emit('folders:browse', { path: rel });
+    const r = await emit('folders:browse', { path });
     if (my !== gen) return;
     if (!r?.ok) { setStatus(folderReasonText(r?.error)); return; }
-    home = r.home;
-    view = { mode: 'browse', purpose, path: r.path, startRel };
-    title.textContent = r.path ? `~/${r.path}` : '~';
+    applyAck(r);
+    view = { mode: 'browse', purpose, path: r.path, parent: r.parent ?? null, startPath: startPath ?? null };
+    title.textContent = displayPath(r.path);
     back.classList.remove('hidden');
     body.innerHTML = '';
     setStatus('');
 
     const actions = el('<div class="px-4 py-2 flex flex-wrap items-center gap-2 border-b border-line"></div>');
-    // 主按钮一律「在这里开始会话」：挑子文件夹时直接开；浏览家目录时先连上再开（已经连着的不重复加）。
-    // 「已经连接」只是提示，不挡路；其余原因（家目录、禁区、托管 worktree……）才置灰。
-    // 手机上改不了清单时（广播里的 foldersReadonly），家目录里新建的接下来加不进去，只会留一个空目录（验收 O41）：
+    // 主按钮一律「在这里开始会话」：挑子文件夹时直接开；添加文件夹时先连上再开（已经连着的不重复加）。
+    // 「已经连接」只是提示，不挡路；其余原因（家目录、磁盘根、禁区、托管 worktree……）才置灰。
+    // 手机上改不了清单时（广播里的 foldersReadonly），新连的目录接下来加不进去，只会留一个空目录（验收 O41）：
     // 「新建文件夹」不给，先说清为什么；未连接的目录同样连不上，「在这里开始会话」一并置灰（已连接的照常可开）。
     // 挑子文件夹时都照常给——那是在已连接的文件夹里，不用写清单。
     const readonly = purpose === 'add' ? getFoldersReadonly() : null;
     const blocked = purpose === 'add' && r.reason !== 'already_connected' && Boolean(r.reason || readonly);
-    const start = purpose === 'add' ? () => add(r.path) : () => pick(absOf(r.path));
+    const start = purpose === 'add' ? () => add(r.path) : () => pick(r.path);
     actions.appendChild(actionButton(t('在这里开始会话'), 'folder-picker-start-here', blocked ? null : start));
     if (!readonly) actions.appendChild(actionButton(t('新建文件夹'), 'folder-picker-mkdir', () => showMkdir(purpose, r.path)));
     if (readonly) {
@@ -155,11 +193,16 @@ export function createFolderPicker({ $, el, socket, openSheet, closeSheet, hapti
     }
     body.appendChild(actions);
 
+    if (purpose === 'add') {
+      body.appendChild(row({
+        icon: '💽', label: t('此电脑'), sub: t('浏览其他磁盘'), testid: 'folder-picker-roots',
+        onClick: renderRoots,
+      }));
+    }
     for (const e of r.entries) {
-      const childRel = r.path ? `${r.path}/${e.name}` : e.name;
       const why = purpose === 'add' && e.reason ? folderReasonText(e.reason) : '';
       const muted = Boolean(why) && e.reason !== 'already_connected';
-      body.appendChild(row({ icon: '📁', label: e.name, sub: why, muted, testid: 'folder-picker-entry', onClick: () => browse(purpose, childRel, startRel) }));
+      body.appendChild(row({ icon: '📁', label: e.name, sub: why, muted, testid: 'folder-picker-entry', onClick: () => browse(purpose, e.path, startPath) }));
     }
     if (!r.entries.length) {
       const empty = el('<div class="px-4 py-4 text-xs text-ink-faint"></div>');
@@ -173,17 +216,17 @@ export function createFolderPicker({ $, el, socket, openSheet, closeSheet, hapti
     }
   }
 
-  async function add(rel) {
-    const r = await emit('folders:add', { path: rel });
+  async function add(path) {
+    const r = await emit('folders:add', { path });
     if (!r?.ok) {
       setStatus(r?.message ? `${folderReasonText(r.error)}：${r.message}` : folderReasonText(r?.error));
       return;
     }
     haptic('success');
-    pick(absOf(rel)); // 连上（或本来就连着）就在那里开新会话：添加文件夹本来就是为了在里面干活
+    pick(path); // 连上（或本来就连着）就在那里开新会话：添加文件夹本来就是为了在里面干活
   }
 
-  function showMkdir(purpose, rel) {
+  function showMkdir(purpose, path) {
     body.querySelector('[data-testid="folder-picker-mkdir-form"]')?.remove();
     const form = el(`
       <form class="px-4 py-2 flex items-center gap-2 border-b border-line" data-testid="folder-picker-mkdir-form">
@@ -195,24 +238,31 @@ export function createFolderPicker({ $, el, socket, openSheet, closeSheet, hapti
     form.querySelector('button').textContent = t('新建');
     form.onsubmit = async ev => {
       ev.preventDefault();
-      const r = await emit('folders:mkdir', { path: rel, name: input.value.trim() });
+      const r = await emit('folders:mkdir', { path, name: input.value.trim() });
       if (!r?.ok) { setStatus(folderReasonText(r?.error)); return; }
       haptic('success');
-      // 浏览家目录时新建：建好就连上、就在里面开新会话（建一个空文件夹本来就是为了在里面干活）
+      // 浏览电脑时新建：建好就连上、就在里面开新会话（建一个空文件夹本来就是为了在里面干活）
       if (purpose === 'pick') pick(r.path);
-      else if (relOf(r.path) != null) await add(relOf(r.path));
-      else await browse('add', rel, view.startRel);
+      else await add(r.path);
     };
     body.insertBefore(form, body.children[1] || null);
     input.focus();
   }
 
   function goBack() {
+    if (view.mode === 'roots') {
+      const back = rootsReturn;
+      rootsReturn = null;
+      if (back) browse(back.purpose, back.path, back.startPath);
+      else renderRoot();
+      return;
+    }
     if (view.mode !== 'browse') return;
     // 挑子文件夹时不往起点之上走：那之上不在已连接的文件夹里，「在这里开始会话」会被服务端拒
-    if (view.path === view.startRel) { renderRoot(); return; }
-    const parent = view.path.includes('/') ? view.path.slice(0, view.path.lastIndexOf('/')) : '';
-    browse(view.purpose, parent, view.startRel);
+    if (view.startPath != null && view.path === view.startPath) { renderRoot(); return; }
+    // 磁盘根再往上就是「此电脑」：Windows 上从 D:\ 回到盘符列表，而不是停在一个不存在的上级
+    if (view.parent == null) { renderRoots(); return; }
+    browse(view.purpose, view.parent, view.startPath);
   }
 
   back.onclick = () => { haptic('tap'); goBack(); };

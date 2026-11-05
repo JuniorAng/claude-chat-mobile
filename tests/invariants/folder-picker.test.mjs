@@ -1,6 +1,6 @@
 // tests/invariants/folder-picker.test.mjs —— 手机上添加 / 新建文件夹的后端判据
-// 守护：FOLDER-01（浏览只回目录名、以家目录为界；家目录 / 磁盘根 / 家目录外 / 禁区 / 仓库里的托管 worktree 不能添加；
-//        新建只收单段名字、非递归、建完 realpath 复核）
+// 守护：FOLDER-01（浏览只回目录名；可以浏览整台电脑，家目录之外用绝对路径；家目录 / 磁盘根 / 禁区 /
+//        仓库里的托管 worktree 不能添加；新建只收单段名字、非递归、建完 realpath 复核）
 // 测什么：sessions/folders.js 在一次性「家目录」上的真 fs 行为——普通文件、FIFO、symlink、点目录、真 git worktree。
 // 不测什么 + 为什么：① 把目录写进配置、热加载生效在 server 层（tests/invariants/server/folders.test.mjs）
 //   ② 已连接之后的授权判据（子目录可达、禁区）在 folder-access.test.mjs（SCOPE-05）
@@ -9,12 +9,12 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { lstatSync, mkdtempSync, mkdirSync, writeFileSync, rmSync, realpathSync, symlinkSync, existsSync, readdirSync, renameSync, rmdirSync } from 'node:fs';
-import { join, dirname, basename } from 'node:path';
+import { join, dirname, basename, isAbsolute, parse } from 'node:path';
 import { tmpdir } from 'node:os';
 import { execFileSync } from 'node:child_process';
 
 import {
-  browseFolderNames, connectRefusalReason, validateFolderName, createSubfolder, resolveFolderToAdd, MAX_BROWSE_ENTRIES,
+  browseFolderNames, browseRoots, connectRefusalReason, validateFolderName, createSubfolder, resolveFolderToAdd, MAX_BROWSE_ENTRIES,
 } from '../../app/src/sessions/folders.js';
 
 const ROOTS = [];
@@ -50,20 +50,23 @@ test('禁区换个大小写照样拒（不分大小写的文件系统）', { ski
   assert.equal(connectRefusalReason(join(home, '.Claude', 'x'), ctx), 'forbidden');
 });
 
-test('浏览只回真实目录的名字：文件、FIFO、symlink、点目录都不出现，也不回绝对路径', () => {
-  const { ctx } = fixture();
+test('浏览只回真实目录的名字：文件、FIFO、symlink、点目录都不出现；回执与子目录都带绝对路径', () => {
+  const { home, ctx } = fixture();
   const res = browseFolderNames('code', ctx);
   assert.equal(res.ok, true, JSON.stringify(res));
   assert.deepEqual(res.entries.map(e => e.name), ['app'],
     '回文件名 = 把目录浏览变成文件浏览；跟 symlink = 一跳出家目录；点目录多是工具的内部状态');
-  assert.equal(res.path, 'code');
-  assert.equal(res.home, ctx.home, '客户端要靠它把相对位置换成会话 cwd');
-  for (const e of res.entries) assert.deepEqual(Object.keys(e).sort(), ['name', 'reason']);
+  assert.equal(res.path, join(home, 'code'), '位置是绝对路径：家目录外的目录用相对路径表达不了');
+  assert.equal(res.parent, home);
+  assert.equal(res.home, ctx.home, '客户端要靠它把家目录内的位置显示成 ~/…');
+  assert.ok(Array.isArray(res.roots) && res.roots.length > 0, '没有盘符列表，客户端就没法从家目录跳到 D:');
+  for (const e of res.entries) assert.deepEqual(Object.keys(e).sort(), ['name', 'path', 'reason']);
+  assert.equal(res.entries[0].path, join(home, 'code', 'app'), '客户端直接拿它当子目录的位置，不该自己拼路径');
 });
 
-test('浏览以家目录为界：../、绝对路径、经 symlink 出界，一律拒绝', () => {
+test('浏览：相对路径仍以家目录为界：../、经 symlink 出界，一律拒绝', () => {
   const { ctx } = fixture();
-  for (const p of ['..', '../outside', 'code/../../outside', '/etc', 'code/link-out']) {
+  for (const p of ['..', '../outside', 'code/../../outside', 'code/link-out']) {
     const res = browseFolderNames(p, ctx);
     assert.equal(res.ok, false, `${p} 被放行了：${JSON.stringify(res)}`);
     assert.equal(res.entries, undefined, `${p}：拒绝时不得带任何目录名`);
@@ -72,6 +75,42 @@ test('浏览以家目录为界：../、绝对路径、经 symlink 出界，一�
   for (const bad of [42, {}, ['code']]) {
     assert.equal(browseFolderNames(bad, ctx).ok, false, `${JSON.stringify(bad)}：载荷来自客户端，非字符串要拒绝而不是抛错`);
   }
+});
+
+test('浏览：绝对路径可以出家目录——Windows 上从盘符进 D: 就靠这一条', () => {
+  const { home, outside, ctx } = fixture();
+  mkdirSync(join(outside, 'proj'), { recursive: true });
+  const res = browseFolderNames(outside, ctx);
+  assert.equal(res.ok, true, JSON.stringify(res));
+  assert.equal(res.path, outside);
+  assert.equal(res.parent, dirname(outside));
+  assert.equal(res.home, home);
+  assert.deepEqual(res.entries.map(e => e.name), ['proj']);
+  assert.equal(res.entries[0].path, join(outside, 'proj'));
+  // 磁盘根本身也能浏览（客户端据此列盘符下的目录），只是不能添加
+  const atRoot = browseFolderNames(parse(home).root, ctx);
+  assert.equal(atRoot.ok, true, JSON.stringify(atRoot));
+  assert.equal(atRoot.parent, null, '磁盘根没有上一级，客户端据此显示「此电脑」');
+  // 禁区的绝对路径照样拒
+  mkdirSync(join(outside, '.claude'), { recursive: true });
+  assert.equal(browseFolderNames(join(outside, '.claude'), { ...ctx, forbidden: [join(outside, '.claude')] }).ok, false);
+});
+
+test('可浏览的文件系统根：至少一个，且都是绝对路径', () => {
+  const roots = browseRoots();
+  assert.ok(roots.length > 0);
+  for (const r of roots) {
+    assert.equal(typeof r.name, 'string');
+    assert.ok(isAbsolute(r.path), `${r.path} 不是绝对路径`);
+  }
+});
+
+// CI 跑在 Linux 上，Windows 那一支只能靠注入平台来验——而 D: 正是这条改动的起因。
+test('可浏览的文件系统根：Windows 只列真实存在的盘符', () => {
+  const roots = browseRoots({ platform: 'win32', exists: p => p === 'C:\\' || p === 'D:\\' });
+  assert.deepEqual(roots, [{ name: 'C:', path: 'C:\\' }, { name: 'D:', path: 'D:\\' }]);
+  assert.deepEqual(browseRoots({ platform: 'linux', exists: () => { throw new Error('非 Windows 不该探测盘符'); } }),
+    [{ name: '/', path: '/' }]);
 });
 
 test('浏览有上限：超出时截断并如实标出', () => {
@@ -91,16 +130,23 @@ test('每个条目带「能不能添加」：禁区置灰，当前目录自身�
   assert.equal(root.entries.find(e => e.name === 'code')?.reason, null);
 });
 
-test('不能添加的：家目录、磁盘根、家目录以外、禁区内、不存在、文件', () => {
+test('不能添加的：家目录、磁盘根、禁区内、不存在、文件；家目录之外的普通目录现在能加', () => {
   const { home, outside, ctx } = fixture();
   assert.equal(connectRefusalReason(home, ctx), 'home');
-  assert.equal(connectRefusalReason('/', ctx), 'root');
-  assert.equal(connectRefusalReason(outside, ctx), 'outside_home');
+  assert.equal(connectRefusalReason(parse(home).root, ctx), 'root');
+  assert.equal(connectRefusalReason(outside, ctx), null, '家目录之外的普通目录现在能加（盘符浏览）');
   assert.equal(connectRefusalReason(join(home, '.claude'), ctx), 'forbidden');
   assert.equal(connectRefusalReason(join(home, '.claude', 'x'), ctx), 'forbidden');
   assert.equal(connectRefusalReason(join(home, 'nope'), ctx), 'not_found');
   assert.equal(connectRefusalReason(join(home, 'code', 'notes.txt'), ctx), 'not_directory');
-  assert.equal(connectRefusalReason(join(home, 'code', 'link-out'), ctx), 'outside_home', '经 symlink 指到家目录外，按真实路径判');
+  assert.equal(connectRefusalReason(join(home, 'code', 'link-out'), ctx), null,
+    '经 symlink 指到家目录外：按真实路径判，现在也是可加的普通目录');
+  // 过宽根与配置写入侧共用一份判据：面板上不该出现「能加」，点了保存才报「太宽」。
+  const broad = process.platform === 'win32'
+    ? 'C:\\Users'
+    : (existsSync('/Users') ? '/Users' : (existsSync('/home') ? '/home' : null));
+  if (broad) assert.equal(connectRefusalReason(broad, ctx), 'too_broad', broad);
+  assert.equal(connectRefusalReason(dirname(home), ctx), 'too_broad', '家目录的祖先同样过宽');
   // 正对照
   assert.equal(connectRefusalReason(join(home, 'code'), ctx), null);
 });
@@ -123,13 +169,15 @@ test('要添加的位置已经是连接根：交出真实路径并标明已连�
   assert.deepEqual(resolveFolderToAdd('code/app', withCode), { ok: true, path: join(code, 'app') });
 });
 
-test('要添加的位置（家目录相对路径）：能加时给出真实路径，不能加时给出原因', () => {
-  const { home, ctx } = fixture();
+test('要添加的位置：家目录相对路径与绝对路径都认；能加时给真实路径，不能加时给原因', () => {
+  const { home, outside, ctx } = fixture();
   assert.deepEqual(resolveFolderToAdd('code/app', ctx), { ok: true, path: join(home, 'code', 'app') });
+  assert.deepEqual(resolveFolderToAdd(outside, ctx), { ok: true, path: outside }, '绝对路径可以在家目录之外');
   assert.deepEqual(resolveFolderToAdd('', ctx), { ok: false, error: 'home' });
   assert.deepEqual(resolveFolderToAdd('..', ctx), { ok: false, error: 'outside_home' });
-  assert.deepEqual(resolveFolderToAdd('code/link-out', ctx), { ok: false, error: 'outside_home' }, '经 symlink 出界');
-  assert.deepEqual(resolveFolderToAdd('/etc', ctx), { ok: false, error: 'outside_home' }, '绝对路径不收：位置一律是家目录相对的');
+  assert.deepEqual(resolveFolderToAdd('code/link-out', ctx), { ok: false, error: 'outside_home' },
+    '相对路径经 symlink 出界仍拒：出家目录的唯一正路是绝对路径');
+  assert.deepEqual(resolveFolderToAdd(join(outside, 'nope'), ctx), { ok: false, error: 'not_found' });
   assert.deepEqual(resolveFolderToAdd(42, ctx), { ok: false, error: 'not_found' });
 });
 
@@ -171,6 +219,16 @@ test('新建：在范围内建出单层目录，返回真实路径', () => {
   assert.equal(res.ok, true, JSON.stringify(res));
   assert.equal(res.path, join(home, 'code', 'new-proj'));
   assert.ok(existsSync(res.path));
+});
+
+test('新建：绝对路径的父目录（家目录外）照常建；相对路径出界仍拒', () => {
+  const { outside, ctx } = fixture();
+  const res = createSubfolder(outside, 'outside-proj', ctx);
+  assert.equal(res.ok, true, JSON.stringify(res));
+  assert.equal(res.path, join(outside, 'outside-proj'));
+  assert.ok(existsSync(res.path));
+  assert.equal(createSubfolder('../outside', 'escape2', ctx).ok, false);
+  assert.equal(existsSync(join(outside, 'escape2')), false);
 });
 
 // 清单在手机上改不了（来源是环境变量 / 外置文件、或没有配置文件）时，在已连接的文件夹之外建出来的目录接下来加不进清单，

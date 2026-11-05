@@ -14,7 +14,7 @@ import '../../setup/require-disposable-env.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtempSync, mkdirSync, rmSync, writeFileSync, readFileSync, realpathSync, existsSync } from 'node:fs';
-import { join } from 'node:path';
+import { join, parse } from 'node:path';
 import { tmpdir } from 'node:os';
 import { io as ioClient } from 'socket.io-client';
 import { spawnServer, killServer } from '../../integration/_spawn-server.mjs';
@@ -91,11 +91,17 @@ test.after(async () => {
   if (root) rmSync(root, { recursive: true, force: true }); // safe-rm: mkdtemp 一次性目录
 });
 
-test('浏览：只回名字，已连接的那个标出来', async () => {
+test('浏览：只回名字与绝对路径，已连接的那个标出来', async () => {
   const res = await emit('folders:browse', { path: 'code' });
   assert.equal(res.ok, true, JSON.stringify(res));
   assert.equal(res.home, home);
-  assert.deepEqual(res.entries, [{ name: 'a', reason: 'already_connected' }, { name: 'b', reason: null }]);
+  assert.equal(res.path, join(home, 'code'), '回执里是绝对路径：家目录外的位置用相对路径表达不了');
+  assert.equal(res.parent, home);
+  assert.ok(Array.isArray(res.roots) && res.roots.length > 0, '没有盘符列表，手机上就跳不到 D:');
+  assert.deepEqual(res.entries, [
+    { name: 'a', path: a, reason: 'already_connected' },
+    { name: 'b', path: b, reason: null },
+  ]);
 });
 
 test('添加：ack 带回生效后的列表、广播跟上、原有条目原样保留、留审计，新目录立刻可用', async () => {
@@ -122,6 +128,23 @@ test('不能加的一律拒绝，配置文件逐字节不变', async () => {
   await waitFor(() => violations('folders:add').length > 0, 'folders:add 越界审计').catch(() => {});
   assert.deepEqual(violations('folders:add').map(r => r.target), ['..']);
   assert.deepEqual(violations('folders:browse'), [], '成功的浏览被记成了越界');
+});
+
+test('浏览与添加：家目录之外的绝对路径（Windows 上从盘符进 D: 的那条路）', async () => {
+  const elsewhere = join(root, 'elsewhere');
+  const proj = join(elsewhere, 'proj');
+  mkdirSync(proj, { recursive: true });
+  const browsed = await emit('folders:browse', { path: elsewhere });
+  assert.equal(browsed.ok, true, JSON.stringify(browsed));
+  assert.equal(browsed.path, elsewhere);
+  assert.deepEqual(browsed.entries.map(e => e.name), ['proj']);
+  assert.equal(browsed.entries[0].path, proj);
+  const res = await emit('folders:add', { path: proj });
+  assert.equal(res?.ok, true, `家目录之外的目录加不进来：${JSON.stringify(res)}`);
+  assert.ok(res.dirs.includes(proj));
+  assert.equal(JSON.parse(readFileSync(configPath, 'utf8')).WORKDIRS.at(-1), proj, '写进文件却没生效 = 假成功');
+  // 磁盘根仍然不能加
+  assert.deepEqual(await emit('folders:add', { path: parse(home).root }), { ok: false, error: 'root' });
 });
 
 // 「在这里开始会话」也用在已经连着的文件夹上：再点一次不该报错，也不该把同一个目录再写一遍。

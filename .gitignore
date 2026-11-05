@@ -41,6 +41,13 @@ ccm.config.json.*
 # 不入库的话 worktree 与 clone 都拿不到（Claude Code 只为 worktree 回读主树的 skills/agents/commands，不含 rules）。
 !/.claude/rules/
 
+# OMC 编排层的本地状态（会话、notepad、handoff、计划与日志）：运行时产物，不是项目资产。
+# 不 ignore 的话 git ls-files --others 会把它们扫成「未分类文件」，随机打红 inventory。
+# 写成 /.omc/* 而非 /.omc/：被排除的目录 git 不再往里看，下面 skills/ 的例外就永远不生效；
+# .omc/skills/** 是 OMC 约定里唯一该入库的项目级技能目录。
+/.omc/*
+!/.omc/skills/
+
 # 历史遗留守卫：常驻 worktree 现已改为仓库外的平级兄弟目录（../claude-chat-mobile-<分支名>，
 # 见 CLAUDE.md 分支纪律），本目录不再使用。留着以防日后有人在仓内建 worktree。
 /.worktrees/
