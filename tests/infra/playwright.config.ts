@@ -52,7 +52,10 @@ export default defineConfig({
     // 就是那里），于是 `node tests/e2e/mock/server.js` 会被解析成 tests/infra/tests/e2e/…；
     // 而且 mock server 自身按仓库根的相对路径读 app/public/，cwd 错了即使找得到文件也跑不对。
     cwd: '../..',
-    command: `CCM_BUILD_NONCE=${buildNonce} PORT=${port} node tests/e2e/mock/server.js`,
+    // 用 env 传变量，不写 POSIX 的 `VAR=x cmd` 前缀：Windows 上 Playwright 经 cmd.exe 起进程，
+    // 前缀会被当成命令的一部分（CCM_BUILD_NONCE is not recognized），webServer 直接起不来。
+    command: 'node tests/e2e/mock/server.js',
+    env: { ...process.env, CCM_BUILD_NONCE: buildNonce, PORT: String(port) } as Record<string, string>,
     url: `${baseURL}/__ready?nonce=${buildNonce}`, // 仅本轮 nonce 匹配才 200，拒绝端口上的陈旧/他者进程
     timeout: 30_000,
     reuseExistingServer: false                     // TC-008：不盲目复用端口上任意进程；始终自起、身份经 nonce 校验

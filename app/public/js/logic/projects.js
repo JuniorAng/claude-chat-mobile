@@ -50,7 +50,8 @@ export function normalizeProjects(payload) {
 const FOLDER_REASON_TEXT = Object.freeze({
   home: tk('不能添加整个家目录'),
   root: tk('不能添加磁盘根目录'),
-  outside_home: tk('只能添加家目录里的文件夹'),
+  too_broad: tk('这个位置太宽，会把整块盘或整层家目录交给远程入口；请选一个具体项目目录'),
+  outside_home: tk('这个位置不能添加'),
   forbidden: tk('这是 Claude 或本应用自己的目录，不能添加'),
   worktree: tk('这是 Claude Code 建的 worktree，跟随所属仓库；请添加仓库本身'),
   already_connected: tk('已经连接'),

@@ -98,7 +98,7 @@ export function collectMarkers(rootDir) {
   const markers = [];
   const malformed = [];
   for (const rel of listSourceFiles(rootDir)) {
-    readFileSync(join(rootDir, rel), 'utf8').split('\n').forEach((line, index) => {
+    readFileSync(join(rootDir, rel), 'utf8').split(/\r?\n/).forEach((line, index) => {
       const hit = line.match(MARKER_LINE_RE);
       if (!hit) return;
       const body = hit[1].trim();

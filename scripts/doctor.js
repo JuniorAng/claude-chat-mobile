@@ -163,8 +163,8 @@ function checkWorkDir() {
     // 过宽根只报不拦（判据与写入侧同一个，见 workdirBreadthDiagnostic）。本机终端里逐条点名，路径可以出现。
     for (const dir of workdirBreadthDiagnostic({ dirs: result.entries.map(e => e.path), home: homedir(), lang: LANG }).broad) {
       warn(from, bi(
-        `过宽：${dir}（家目录本身，或 /、/Users、/home 这类根）——范围内的文件对远程入口全部可读，FILE_EDIT 缺省开着时还可直写。请改成具体的项目目录`,
-        `Overly broad: ${dir} (the home directory itself, or a root such as /, /Users or /home) — everything in scope is readable by the remote entrypoint, and writable while FILE_EDIT is on (the default). Narrow it to a specific project directory`));
+        `过宽：${dir}（家目录本身，或 /、/Users、/home 这类根；Windows 上还有盘符根与共享根）——范围内的文件对远程入口全部可读，FILE_EDIT 缺省开着时还可直写。请改成具体的项目目录`,
+        `Overly broad: ${dir} (the home directory itself, or a root such as /, /Users or /home; on Windows also drive roots and UNC share roots) — everything in scope is readable by the remote entrypoint, and writable while FILE_EDIT is on (the default). Narrow it to a specific project directory`));
     }
     // 「已连接的文件夹」布局：多余的 worktree 条目、无文件夹目录落在 git 仓库里或不可写（只报不拦）。
     const layout = probeConnectedFolders({ dirs: result.entries.map(e => e.path), scratchRoot: scratchRoot() });

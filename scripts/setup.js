@@ -276,7 +276,7 @@ export const MESSAGES = {
       work_dir_required: () => '--work-dir 给的是空值。要跳过就别带这个参数（以后在手机上新建会话时再选）；'
         + '这里不会静默回落到 $HOME——那等于把整个家目录交给远程入口。',
       work_dir_is_home: () => '工作区不能是家目录。请换成一个具体项目目录。',
-      work_dir_too_broad: () => '工作区不能是根目录或所有家目录之父（/、/Users、/home、/root）——'
+      work_dir_too_broad: () => '工作区不能是根目录或所有家目录之父（/、/Users、/home、/root；Windows 上还有盘符根与共享根）——'
         + '那等于把整台机器挂给远程入口。请换成一个具体项目目录。',
       work_dir_not_absolute: () => '工作区必须是绝对路径（或以 ~/ 写成家目录下的子目录）。',
       tty_required: () => '当前没有交互终端。不要跑 npm run setup；改用：'

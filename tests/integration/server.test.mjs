@@ -616,8 +616,11 @@ const ACK_SHAPES = [
   { event: 'browse:list', branch: '越界 cwd', payload: () => ({ cwd: '/definitely/not/connected', path: '.' }), required: ['ok', 'error'] },
   // 手机上添加 / 新建文件夹（FOLDER-01，2026-09-24）。浏览的成功支免夹具：家目录本身照样返回完整键集。
   { event: 'folders:browse', branch: '家目录', payload: () => ({ path: '' }),
-    required: ['ok', 'home', 'path', 'reason', 'entries', 'truncated'],
-    check: ack => assert.ok(Array.isArray(ack.entries), 'entries 必须是数组——前端无条件遍历') },
+    required: ['ok', 'home', 'path', 'parent', 'roots', 'reason', 'entries', 'truncated'],
+    check: ack => {
+      assert.ok(Array.isArray(ack.entries), 'entries 必须是数组——前端无条件遍历');
+      assert.ok(Array.isArray(ack.roots), 'roots 必须是数组——客户端靠它列盘符/根');
+    } },
   { event: 'folders:browse', branch: '越界', payload: () => ({ path: '..' }), required: ['ok', 'error'] },
   { event: 'folders:mkdir', branch: '名字不合法', payload: () => ({ path: '', name: '..' }), required: ['ok', 'error'] },
   { event: 'folders:add', branch: '家目录不能加', payload: () => ({ path: '' }), required: ['ok', 'error'] },

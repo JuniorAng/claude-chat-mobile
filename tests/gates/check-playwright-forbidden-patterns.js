@@ -80,7 +80,9 @@ for (const dir of TARGET_DIRS) {
   if (!existsSync(absDir)) continue;
   for (const file of walk(absDir)) {
     scanned.push(file);
-    const rel = file.slice(rootDir.length + 1);
+    // 路径统一成 /：Windows 上 slice 出来是反斜杠，excludeDirs 的 `tests/e2e/mock/` 前缀会匹配不上，
+    // mock 里合法的时序工具函数就会被当成 spec 里的固定等待报红。
+    const rel = file.slice(rootDir.length + 1).replace(/\\/g, '/');
     const text = readFileSync(file, 'utf8');
     const lines = text.split('\n');
     for (const { pattern, label, excludeDirs, find } of FORBIDDEN) {

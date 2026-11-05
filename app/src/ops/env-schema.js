@@ -22,10 +22,10 @@ import { isSerializableEnvValue, maskSecret, shellOverriddenKeys } from './env-f
 // 与 server 启动、两个 doctor 共用同一份 loopback 判据：这里若自己再写一遍「什么算本机地址」，
 // 面板放行的配置就可能与 server 实际拒绝的配置对不上。
 import { homedir } from 'node:os';
-import { realpathSync } from 'node:fs';
-import { resolve } from 'node:path';
+import { isAbsolute as isAbsoluteWin32 } from 'node:path/win32';
 import { isLoopbackBindHost } from '../shared/bind-host.js';
 import { isBareHostname } from '../shared/public-target.js';
+import { overlyBroadWorkdir } from '../shared/workdir-broad.js';
 
 // 开关类的真值字面量**逐 key 声明**，绝不用统一的 truthy 判定。
 // src/ops/log-terminal.js:32 明写过这个经典脚枪：LOG_STDERR=false 反而是「开」——
@@ -185,12 +185,12 @@ export const ENV_SCHEMA = {
     // readonly 也已是 false，那句话从此在说一件代码里不成立的事（2026-09-17 安全审查 M2 顺带查出）。
     help: t('每项是绝对路径，或 {path, sessionLimit}。第一项就是手机端默认打开的目录。'
       + '子文件夹与所属仓库的 git worktree 直接可用，不必单独列出；手机上也能在文件夹选择器里「添加文件夹」。'
-      + '改完即生效，无需重启。不能填家目录本身或 /、/Users、/home 这类过宽的根——'
+      + '改完即生效，无需重启。不能填家目录本身或 /、/Users、/home、盘符根、共享根这类过宽的根（Windows 上 D:\\Projects 可以，D:\\ 不行）——'
       + '范围内的文件对远程入口全部可读，FILE_EDIT 缺省开着时还可直写。',
       'Each entry is an absolute path, or {path, sessionLimit}. The first entry is the one your '
       + 'phone opens by default. Subfolders and the repository\'s own git worktrees are reachable '
       + 'without their own entries, and the phone\'s folder picker can "Add folder" too. Hot-reloads without a restart. It cannot be your home directory '
-      + 'itself, nor an overly broad root such as /, /Users or /home — everything in scope is readable '
+      + 'itself, nor an overly broad root such as /, /Users, /home, a drive root or a UNC share root — everything in scope is readable '
       + 'by the remote entrypoint, and writable too while FILE_EDIT is on (the default).'),
   },
   WORK_DIRS_FILE: {
@@ -417,66 +417,19 @@ function checkUrl(key, value, def) {
   return ok ? null : `${def.label.zh} 只支持 http/https${allowMailto ? '/mailto' : ''}`;
 }
 
-// 授权工作区的「过宽根」判据。**装机向导与配置写入侧共用这一份**（M2，2026-09-17 安全审查）。
-//
-// 此前只有向导拒绝家目录（scripts/setup.js 的 normalizeSetupWorkDir → work_dir_is_home，
-// README 也明写「不要把整个 Home 目录加入工作区」），而写入侧只查「是不是绝对路径」。
-// 于是装机时被硬拒的东西，运行时从一台已批准设备改一行就能写进去——而 WORKDIRS 是全表唯一的
-// `reload: 'hot'`，**保存即生效、不需要重启**。两道闸不同源就等于没有闸。
-//
-// 后果不止「多授权一个目录」：FILE_EDIT 缺省是开的（TOGGLE_OFF：空=开），范围内的已存在文件
-// 可经文件编辑器直写、不过 Agent 审批链。把 $HOME 写进去等于把 ~/.ssh、~/.aws、浏览器 profile
-// 一并挂到远程入口上。
-//
-// 与 SCOPE-03 的分工：那条管「清单为空或一个都解析不出 → 只剩「无文件夹」、绝不回落家目录」，管的是**回落**；
-// 这里管**显式写入**。两条路不同，家目录暴露的后果相同。
-//
-// 按**路径段**比较而不是字符串前缀：`/home/tester2` 与家目录 `/home/tester` 只差一个字符，
-// 用 startsWith 判会把前者一并误伤，而误伤的症状（面板一保存就报错）比漏拦更容易让人去把
-// 这道闸整个删掉。
-const OVERLY_BROAD_ROOTS = ['/', '/Users', '/home', '/root'];
+// 授权工作区的「过宽根」判据（work_dir_too_broad / work_dir_is_home）。单一事实源在
+// shared/workdir-broad.js：装机向导、配置写入、doctor 与手机端文件夹选择器共用同一份，
+// 避免「面板说能加，保存说太宽」；归一化（. / .. / 尾斜杠 / symlink / Windows 盘符别名）也在那里。
+export { overlyBroadWorkdir };
 
-// 【必须先归一再比，只去尾随斜杠远远不够】下游 sessions/workdirs.js 的 resolveWorkdirs 会对
-// 每一项做 realpathSync。于是任何**等价但非规范**的写法——`/home/you/.`、`/tmp/../home/you`、
-// `/home//you`、以及指向家目录的 symlink——都能通过一个只比字符串的校验，然后被还原成家目录
-// 本身放进白名单。闸形同虚设（2026-09-17 PR #80 review 抓到，实测四种形态全部绕过）。
-//
-// 两层归一各管一档，缺一不可：
-//   · resolve()：词法层，吃掉 . / .. / 重复斜杠 / 尾随斜杠。纯字符串运算，对不存在的路径也成立。
-//   · realpathSync()：落点层，吃掉 symlink。词法归一看不见 symlink，而 resolveWorkdirs 用的
-//     正是它——两侧判据不同源就还能绕。
-//
-// realpath 对**尚不存在**的路径会抛：那时退回词法结果继续判，而不是放行或一律拒。用户完全
-// 可能先把工作区配好再去建目录；而「归一之后就是 /home」这种，realpath 抛了也照样得拦住。
-//
-// 【残留的 TOCTOU】写入通过之后、resolveWorkdirs 读到之前，那个路径仍可能被换成指向家目录的
-// symlink。写入侧的校验关不掉这个窗口——真要关得在 resolveWorkdirs 那侧也判一次。没有在本次
-// 一并做：那会改变**启动/热加载**的行为，已经把 $HOME 配在 WORKDIRS 里的存量安装会突然失去
-// 工作区，属于另一个量级的变更，应单独决策。
-// 返回 { lexical, real } 两种形态。**两种都要留着比**，只比一种都会漏：
-//   · 只比落点：macOS 上 realpath('/home') 是 `/System/Volumes/Data/home`，字面写 `/home` 就绕过了
-//     （实测，这正是本判据第一版漏掉的那格）。各平台的规范形态不可能逐个枚举。
-//   · 只比词法：symlink 看不见，指向家目录的链接照样通过。
-// 任一形态命中即拒，失败方向是拒绝。
-function workdirForms(rawPath) {
-  const path = String(rawPath ?? '').trim();
-  if (!path) return null;
-  const lexical = resolve(path);
-  let real = lexical;
-  // .native：落到磁盘上的真实写法——macOS 不分大小写，/USERS 就是 /Users，JS 版会原样保留而漏拦
-  try { real = realpathSync.native(lexical); } catch { /* 尚不存在 / 无权限：落点就按词法算，不因此放行 */ }
-  return { lexical, real };
-}
-
-export function overlyBroadWorkdir(rawPath, home) {
-  const p = workdirForms(rawPath);
-  if (!p) return null;
-  if (OVERLY_BROAD_ROOTS.includes(p.lexical) || OVERLY_BROAD_ROOTS.includes(p.real)) {
-    return 'work_dir_too_broad';
-  }
-  const h = home ? workdirForms(home) : null;
-  if (h && (p.lexical === h.lexical || p.real === h.real)) return 'work_dir_is_home';
-  return null;
+// 绝对路径判据：POSIX（/…）恒认；win32（C:\… / C:/… / \\server\share\…）只在 server 跑在
+// Windows 上才认。旧写法只看 startsWith('/')，在原生 Windows 上会把 C:\… 当成相对路径整项拒写——
+// 手机端加文件夹、config set CLAUDE_BIN/WORKDIRS 全走这道。反过来，POSIX 宿主上放行 win32 形态
+// 也是错的：读侧的 resolveWorkdirs 用 realpathSync.native 解析，会把 C:\… 当成相对当前目录的
+// 普通文件名，正是「启动后 cwd 未必是仓库根」要防的那类静默漂移。
+function isAbsoluteAnyPlatform(p) {
+  const s = String(p);
+  return s.startsWith('/') || (process.platform === 'win32' && isAbsoluteWin32(s));
 }
 
 // list（当前只有 WORKDIRS）的结构校验。
@@ -496,7 +449,7 @@ function checkList(value, def, home) {
     // ★ 必须是绝对路径。checkOne 的 path kind 早就有这道（理由：启动后 cwd 未必是仓库根），
     // 而 list 独独漏了 —— 实测 ['..'] 能通过校验，realpath 相对 cwd 解析后把仓库父目录
     // 整棵树放进白名单。白名单是 claude 的文件作用域边界，不是展示用的列表。
-    if (!path.startsWith('/')) {
+    if (!isAbsoluteAnyPlatform(path)) {
       return `${def.label.zh} 的每项必须是绝对路径（启动后 cwd 未必是仓库根），收到：${JSON.stringify(path)}`;
     }
     // 过宽根：与装机向导同一份判据（见 overlyBroadWorkdir 头注）。装机时被硬拒的东西，
@@ -575,7 +528,7 @@ function checkOne(key, value, def, d) {
   }
 
   if (def.kind === 'path') {
-    if (!value.startsWith('/')) return `${def.label.zh} 必须是绝对路径（启动后 cwd 未必是仓库根）`;
+    if (!isAbsoluteAnyPlatform(value)) return `${def.label.zh} 必须是绝对路径（启动后 cwd 未必是仓库根）`;
     if (def.mustExist && !d.fileExists(value)) return `路径不存在：${value}`;
     if (def.executable && !d.isExecutable(value)) return `文件不可执行：${value}`;
     return null;

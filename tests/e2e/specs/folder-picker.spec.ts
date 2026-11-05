@@ -97,6 +97,27 @@ test.describe('P0 日常零 token Mock UI 回归', () => {
     await expectNoBrowserErrors(page);
   });
 
+  // 2026-11-05：添加文件夹不再以家目录为界——Windows 上从「此电脑」进 D: 一类别的盘。UI 这一层只验
+  // 「盘符列表画出来了、点进去发对了绝对路径、选中的文件夹连上了」，真 server 的判据在 S1/S2。
+  test('P0-PICK-19 添加文件夹：从「此电脑」进另一块盘，选家目录外的文件夹连接并开会话', async ({ page }) => {
+    await openPickerFromCompose(page);
+    await picker(page).locator('[data-testid="folder-picker-add"]').click();
+    await expect(pickerTitle(page)).toHaveText('~');
+    await picker(page).locator('[data-testid="folder-picker-roots"]').click();
+    await expect(pickerTitle(page)).toHaveText('此电脑');
+    await picker(page).locator('[data-testid="folder-picker-root"]', { hasText: 'Data' }).locator('button').first().click();
+    await expect(pickerTitle(page), '家目录外的位置直接显示绝对路径').toHaveText('/Volumes/Data');
+    await entry(page, 'Projects').locator('button').first().click();
+    await entry(page, 'demo-app').locator('button').first().click();
+    await picker(page).locator('[data-testid="folder-picker-start-here"]').click();
+
+    await expect(picker(page)).not.toHaveClass(/sheet-open/);
+    await expect(page.locator('[data-testid="compose-project-pill"]')).toContainText('demo-app');
+    await openSessionsSidebar(page);
+    await expect(workspaceRow(page, '/Volumes/Data/Projects/demo-app')).toHaveCount(1);
+    await expectNoBrowserErrors(page);
+  });
+
   // 验收 O41：清单改不了时，抽屉的「＋ 选择文件夹」此前照样可点，走完选择面板才被拒。
   // 与首页引导（P0-FOLDERS-RO）同一取舍：入口置灰，就地说清为什么。
   test('P0-PICK-5 工作区列表来自环境变量的安装：抽屉的「选择文件夹」置灰并说清为什么，点不开面板', async ({ page }) => {

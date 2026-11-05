@@ -14,7 +14,7 @@ import {
   overlyBroadWorkdir,
   validateEnvChanges,
 } from '../../app/src/ops/env-schema.js';
-import { existsSync } from 'node:fs';
+import { existsSync, realpathSync } from 'node:fs';
 import { homedir } from 'node:os';
 // 跨模块引一次 doctor 的 D18：本文件末尾那条「判据同源」断言要拿它当对照物。
 import { envOverrideDiagnostic } from '../../app/src/ops/doctor-checks.js';
@@ -884,10 +884,43 @@ test.describe('buildEnvView：老式 .env 安装下的结构化列表', () => {
 
 // 过宽根与家目录是拒绝名单：比较前要落到磁盘上的真实写法。macOS 缺省不分大小写，/USERS 就是 /Users、
 // 家目录换个大小写还是家目录——按字面比会被换个大小写绕过去。分大小写的系统上（Linux CI）构造不出来，跳过。
-test('过宽根与家目录换个大小写照样拒（不分大小写的文件系统）', { skip: !(existsSync('/Users') && existsSync('/USERS')) }, () => {
+// Windows 也跳过：那条名单是 POSIX 的，而 resolve('/Users') 在 Windows 上落到 C:\Users，构造不出「同一个目录的另一种写法」。
+test('过宽根与家目录换个大小写照样拒（不分大小写的文件系统）', {
+  skip: process.platform === 'win32' || !(existsSync('/Users') && existsSync('/USERS')),
+}, () => {
   assert.equal(overlyBroadWorkdir('/USERS', '/Users/nobody'), 'work_dir_too_broad');
   const home = homedir();
   assert.equal(overlyBroadWorkdir(home.toUpperCase(), home), 'work_dir_is_home');
+});
+
+// Windows 的盘符根与 UNC 共享根和 /、/Users 同一档：把整块盘挂给远程入口。这条按原文判，
+// 所以在 POSIX CI 上也验得到（宿主是 POSIX 时 resolve('D:\') 会把它当成普通路径段）。
+test('Windows 盘符根、家目录之父与共享根算过宽根（跨平台、按规范形态判）', () => {
+  for (const p of [
+    'D:\\', 'D:/', 'd:\\', 'C:\\Users', 'C:\\Users\\', 'D:/home', '\\\\nas\\share', '\\\\nas\\share\\',
+    '/Users/', '/home/',
+    // 别名：只比字面量时这些都能骗过闸，resolve 之后才是同一个位置（2026-11-05 review）。
+    'D:\\.', 'D:\\dir\\..', 'C:\\Users\\.', 'C:\\Users\\\\', '//server/share', '\\\\?\\UNC\\server\\share',
+  ]) {
+    assert.equal(overlyBroadWorkdir(p, '/Users/nobody'), 'work_dir_too_broad', p);
+  }
+  for (const p of ['D:\\Projects', 'D:/Projects/foo', 'C:\\Users\\alice\\proj', 'D:\\Users\\bob']) {
+    assert.equal(overlyBroadWorkdir(p, '/Users/nobody'), null, p);
+  }
+  // 配置写入闸走的是同一个函数：别名形态也不能只写进去、热加载后才变成整块盘。
+  assert.equal(validateEnvChanges({ WORKDIRS: ['D:\\.'] }, deps()).ok, false);
+  assert.equal(validateEnvChanges({ WORKDIRS: ['C:\\Users\\.'] }, deps()).ok, false);
+});
+
+test('过宽根按落点与关系判：名单的规范形态、自定义家目录的祖先都拦', () => {
+  const home = '/srv/people/nobody';
+  assert.equal(overlyBroadWorkdir('/srv/people', home), 'work_dir_too_broad', '家目录的祖先');
+  assert.equal(overlyBroadWorkdir('/srv/people/nobody/proj', home), null, '家目录下的项目不误伤');
+  // macOS 上 realpath('/Users') 是 /System/Volumes/Data/Users——名单本身也要按落点归一。
+  const canonicalUsers = (() => { try { return realpathSync.native('/Users'); } catch { return null; } })();
+  if (canonicalUsers) {
+    assert.equal(overlyBroadWorkdir(canonicalUsers, '/Users/nobody'), 'work_dir_too_broad', canonicalUsers);
+  }
 });
 
 // 验收 O47（AC-17-11）：「服务与配置」面板有几段说明原样露出了 markdown 的 **加粗**（TRUSTED_PROXY / WORKDIRS /
