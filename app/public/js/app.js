@@ -1984,8 +1984,8 @@ import { createKeyboardInset } from './app/keyboard-inset.js';
     const busyN = instancesList.filter(i => i.state === 'busy' || i.state === 'permission').length;
     const warnLine = busyN ? `⚠️ ${busyN} ${t('个会话在运行/待审批，重启会中断它们（含后台任务）。')}\n\n` : '';
     if (!(await appConfirm({
-      title: t('⟳ 重启服务？'),
-      body: `${warnLine}${t('服务将优雅退出并由 KeepAlive 自动拉起，页面会自动重连。')}`,
+      title: t('⟳ 重启服务与 Claude CLI 会话？'),
+      body: `${warnLine}${t('服务将优雅退出并自动拉起；正在运行的 Claude CLI 会话会被中断，页面会自动重连。')}`,
       okText: t('重启'),
       tone: 'danger',
     }))) return;
@@ -4489,9 +4489,12 @@ import { createKeyboardInset } from './app/keyboard-inset.js';
     // 不给点，并当场说明原因（与配置面板不给「立即重启」同一判据）。
     if (btnRestartServer) {
       btnRestartServer.disabled = !_canRestart;
-      btnRestartServer.textContent = _canRestart
-        ? t('⟳ 重启服务（改代码/配置后生效）')
-        : t('⟳ 重启服务：本进程不是常驻托管，停了不会自动拉起，请到电脑上重启');
+      const labelEl = $('btnRestartServerLabel');
+      const hintEl = $('btnRestartServerHint');
+      if (labelEl) labelEl.textContent = _canRestart ? t('⟳ 重启服务') : t('⟳ 重启服务（不可用）');
+      if (hintEl) hintEl.textContent = _canRestart
+        ? t('重启端口 3000 与所有 Claude CLI 会话')
+        : t('本进程不是常驻托管，停了不会自动拉起，请到电脑上重启');
     }
     // 短 session_id 状态胶囊：显示当前查看会话的前 8 位；无 id 时收起胶囊并就地说明缺席原因。
     // 两个空态参数在此处求值：实例懒开于首条消息，故「有 newViewing 却无 sid」＝id 分配在途；

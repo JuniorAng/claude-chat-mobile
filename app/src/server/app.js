@@ -612,7 +612,10 @@ function preflight() {
   // 正是本段头注说的「升级后回归核对」。2026-09-17 安全审查评估后保留现状。
   try {
     // env 走 childEnv：claude 子进程一律拿不到 CCM 自己的控制面密钥（AUTH-06），这一次也不例外。
-    versions.cli = execSync(`"${claudeBin}" --version`, { encoding: 'utf8', env: childEnv() }).trim();
+    // ★ timeout 不是可选项：版本采集在启动路径上，卡住就等于服务再也起不来（2026-11-05 手机重启
+    // 实测：上一条命退出后新进程停在 claude --version 上，端口一直不监听，只能手动 taskkill）。
+    // 失败由下面的 catch 吞掉，cli 版本留 unknown，不影响服务本身。
+    versions.cli = execSync(`"${claudeBin}" --version`, { encoding: 'utf8', env: childEnv(), timeout: 5000, killSignal: 'SIGKILL' }).trim();
   } catch { /* 非致命 */ }
   // 三段各自独立 try：任一来源失败只让自己留 unknown，不连坐其余（曾把 server 版本挂在 SDK 同块里被连坐跳过）。
   const require = createRequire(import.meta.url);
@@ -5749,6 +5752,10 @@ httpServer.listen(listenPort, host, () => {
 
 // #4：SIGINT 与 SIGTERM 都要清理（node --watch 重启、进程管理器、docker stop 走 SIGTERM）
 function shutdown(sig) {
+  // 兜底先布：关闭链路里任何一步卡住，进程都不能停在「正在关闭」。拉起器只看得见子进程还活着，
+  // 于是永远轮不到下一轮重启（2026-11-05 手机端实测：端口已关、页面连不回来，要到电脑上手动
+  // taskkill）。正常路径仍由下面 io.close 的回调立即退出，这个计时器只兜住卡住的路径。
+  setTimeout(() => process.exit(0), 5000);
   console.log(`\n收到 ${sig}，正在关闭…`);
   sessions.flushSaveSync(); // B4：防抖窗口内未落盘的状态同步写入
   clearInterval(statusInterval);  // E16：node --watch 的 SIGTERM 重启路径必须清定时器
@@ -5776,7 +5783,6 @@ function shutdown(sig) {
   readState.flushSaveSync(); // 同上：防抖窗内的已读位点不落盘，换设备就会看到一屏假未读
   folderOrder.flushSaveSync(); // 同上：文件夹顺序
   io.close(() => process.exit(0)); // 主动关所有 socket 连接再关底层 http server；否则 WS 长连接把 close 回调拖到 3s 兜底才退（实测断连窗口 ~3.5s → 近乎即时）
-  setTimeout(() => process.exit(0), 3000).unref(); // 兜底：io.close 万一挂起仍强退
 }
 process.on('SIGINT', () => shutdown('SIGINT'));
 process.on('SIGTERM', () => shutdown('SIGTERM'));

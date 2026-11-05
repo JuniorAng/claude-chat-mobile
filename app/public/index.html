@@ -1020,10 +1020,19 @@
         <div id="generalNavRows" class="space-y-2"></div>
         <!-- 底部两档（#302，app/local-reset.js）：「重新加载」不丢数据，「重置本机数据」清空这台设备上存的一切 -->
         <div class="pt-3 space-y-2" data-testid="local-reset">
-          <button id="btnReloadApp" type="button" class="w-full text-left p-2.5 rounded-xl border border-line bg-surface active:bg-sunk text-xs text-ink">
-            <span class="font-semibold block">重新加载</span>
-            <span class="text-ink-soft">清掉缓存后刷新页面；令牌、没发出去的消息和已读记录都保留</span>
-          </button>
+          <div class="flex gap-2 items-stretch">
+            <button id="btnReloadApp" type="button" class="flex-1 min-w-0 text-left p-2.5 rounded-xl border border-line bg-surface active:bg-sunk text-xs text-ink">
+              <span class="font-semibold block">重新加载</span>
+              <span class="text-ink-soft">清掉缓存后刷新页面；令牌、没发出去的消息和已读记录都保留</span>
+            </button>
+            <!-- 开发者模式：一键重启 server + Claude CLI 会话（仅 DEV_MODE=1 时显示，由 setInstances 控制） -->
+            <div id="devModeGroup" class="hidden flex-1 min-w-0">
+              <button id="btnRestartServer" type="button" class="w-full h-full text-left p-2.5 rounded-xl border border-warning/40 bg-warning/5 active:bg-warning/10 text-xs text-warning">
+                <span id="btnRestartServerLabel" class="font-semibold block">⟳ 重启服务</span>
+                <span id="btnRestartServerHint" class="text-warning/80">重启端口 3000 与所有 Claude CLI 会话</span>
+              </button>
+            </div>
+          </div>
           <button id="btnResetLocal" type="button" class="w-full text-left p-2.5 rounded-xl border border-line bg-surface active:bg-sunk text-xs text-ink">
             <span class="font-semibold block text-danger">重置本机数据</span>
             <span class="text-ink-soft">清空这台设备上保存的一切，包括令牌和没发出去的消息</span>
@@ -1269,10 +1278,6 @@
           </div>
           <div class="space-y-2">
             <button id="btnEnvConfig" type="button" class="w-full text-left p-2.5 rounded-xl border border-line bg-surface active:bg-sunk text-xs text-ink">⚙ 全部配置 · 端口 / 文件夹 / 推送 →</button>
-            <!-- 开发者模式：一键重启 server（仅 DEV_MODE=1 时显示，由 setInstances 控制）-->
-            <div id="devModeGroup" class="hidden">
-              <button id="btnRestartServer" type="button" class="w-full text-left p-2.5 rounded-xl border border-warning/40 bg-warning/5 active:bg-warning/10 text-xs text-warning">⟳ 重启服务（改代码/配置后生效）</button>
-            </div>
           </div>
         </div>
       </div>

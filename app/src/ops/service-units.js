@@ -188,6 +188,11 @@ export function isSupervised({
   platform = typeof process !== 'undefined' ? process.platform : '',
 } = {}) {
   const e = env || {};
+  // 显式托管标记：Windows 的 start-ccm.cmd 用 `:loop` 拉起进程，环境里没有任何可探测的托管
+  // 痕迹。这类拉起者由自己声明 —— 设了就必须真的拉起，它是承诺不是探测；误设等于放开一个
+  // 退出后无人拉起的重启（与 2026-08-19 那次「假成功真死亡」同一后果）。
+  const marker = typeof e.CCM_SUPERVISED === 'string' ? e.CCM_SUPERVISED.trim().toLowerCase() : '';
+  if (marker === '1' || marker === 'true') return true;
   if (platform === 'darwin') {
     if (ppid !== 1) return false;
     const xpc = typeof e.XPC_SERVICE_NAME === 'string' ? e.XPC_SERVICE_NAME.trim() : '';

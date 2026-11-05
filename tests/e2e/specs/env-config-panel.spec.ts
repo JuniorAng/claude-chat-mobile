@@ -188,7 +188,7 @@ test.describe('P0 日常零 token Mock UI 回归 · 保存路径', () => {
   test('P0-31l 开发者模式：拉不起来时「重启服务」不可点并说明原因', async ({ page }) => {
     await gotoMock(page);
     await page.request.post('/__dev-mode?canRestart=0');
-    await openGeneralPage(page, 'behavior');
+    await openGeneralSettings(page);
     const btn = page.locator('#btnRestartServer');
     await expect(btn).toBeVisible();
     await expect(btn).toBeDisabled();
@@ -199,7 +199,7 @@ test.describe('P0 日常零 token Mock UI 回归 · 保存路径', () => {
   test('P0-31m 开发者模式：重启被服务端拒绝时不留「正在重启」', async ({ page }) => {
     await gotoMock(page);
     await page.request.post('/__dev-mode?canRestart=1&deny=1');
-    await openGeneralPage(page, 'behavior');
+    await openGeneralSettings(page);
     await page.locator('#btnRestartServer').click();
     await page.locator('#confirmOk').click();
     await expect(page.locator('#messages')).toContainText('重启被拒');
@@ -210,7 +210,7 @@ test.describe('P0 日常零 token Mock UI 回归 · 保存路径', () => {
   test('P0-31n 开发者模式：重启后新进程连上来，撤掉「正在重启服务」', async ({ page }) => {
     await gotoMock(page);
     await page.request.post('/__dev-mode?canRestart=1');
-    await openGeneralPage(page, 'behavior');
+    await openGeneralSettings(page);
     await page.locator('#btnRestartServer').click();
     await page.locator('#confirmOk').click();
     await expect(page.locator('#messages')).toContainText('正在重启服务');
@@ -230,7 +230,7 @@ test.describe('P0 日常零 token Mock UI 回归 · 保存路径', () => {
       await page.locator(enter).click();
       await expect(page.locator(surface)).toBeVisible();
       await page.request.post('/__dev-mode?canRestart=1');
-      await openGeneralPage(page, 'behavior');
+      await openGeneralSettings(page);
       await page.locator('#btnRestartServer').click();
       await page.locator('#confirmOk').click();
       await expect(page.locator('#messages')).toContainText('正在重启服务');
