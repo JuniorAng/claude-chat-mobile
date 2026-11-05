@@ -128,6 +128,19 @@ test.describe('resolveWorkdirs', () => {
     assert.ok(warnings.length >= 1);
   });
 
+  // 写侧（env-schema 的 checkList）早就拒这类值；手改配置与更早版本写下的条目只能靠读侧挡。
+  // Windows 上 "C:" 是盘符相对的：realpathSync 会把它解析成进程 cwd 所在的盘（"C:" 就是 server
+  // 的启动目录），等于凭一个坏条目把整棵当前目录放进白名单；POSIX 上 ".." 同理。
+  test('不是绝对路径的条目 → warn-skip，绝不按进程 cwd 解析', () => {
+    const { dirs, warnings, missing } = resolveWorkdirs([
+      { path: '..', sessionLimit: 6 }, { path: 'C:', sessionLimit: 6 },
+    ]);
+    assert.deepEqual(dirs, []);
+    assert.equal(warnings.length, 2);
+    assert.ok(warnings.every(w => /不是绝对路径/.test(w)), warnings.join('\n'));
+    assert.deepEqual(missing, [], '不是「找不到」——磁盘上没有这个位置可等它回来');
+  });
+
   test('文件（非目录）→ skip', () => {
     const f = join(base, 'afile');
     writeFileSync(f, 'x');

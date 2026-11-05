@@ -301,6 +301,12 @@ export function findProjectDirCollisions(dirs = []) {
   return collisions;
 }
 
+// 读侧与写侧（env-schema 的 isAbsoluteAnyPlatform）同一判据：POSIX 宿主要求 /…，Windows 宿主认
+// C:\… / \\server\share；"C:"（盘符相对）两边都不是绝对路径。写侧那道闸挡的是新写入，手改配置与
+// 旧版本写下的条目只能靠这里挡——realpathSync 会把它按进程 cwd 解析（Windows 上 "C:" 就是 server
+// 的启动目录），等于凭一个坏条目把当前目录整棵放进白名单。
+const hostAbsolute = p => (process.platform === 'win32' ? isAbsoluteWin32(p) : isAbsolutePosix(p));
+
 // realpathSync（解符号链接/相对段，与 CLI 命名一致）+ isDirectory 校验，warn-skip 无效项；realpath 后二次去重。
 // 返回 { dirs: [规范化路径], limits: Map<路径, sessionLimit>, warnings, missing: [找不到或不是目录的原样路径] }。
 // missing 喂服务告警：清单为空也能启动之后，全部失效不再以「拒绝启动」示警（SCOPE-03）。
@@ -310,6 +316,11 @@ export function resolveWorkdirs(entries) {
   const warnings = [];
   const missing = [];
   for (const { path, sessionLimit } of entries) {
+    if (!hostAbsolute(path)) {
+      // 不是「找不到」：磁盘上没有这个位置可等它回来，也不该进「移除缺失项」那类告警。
+      warnings.push(`工作区忽略（不是绝对路径，不能相对 cwd 解析）：${path}`);
+      continue;
+    }
     let real;
     try {
       real = realpathSync.native(path); // 与 folder-access.js 同一种 realpath：连接根与候选路径的写法必须一致

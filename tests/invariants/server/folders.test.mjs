@@ -160,6 +160,22 @@ test('添加已经连着的文件夹：照常成功、标明没有新加，配�
   assert.equal(connectedRows(), rowsBefore);
 });
 
+// 既有条目坏了不该把「添加」永久卡死：更早的盘符浏览在 Windows 上写下过 "C:" / "D:" 这类盘符相对
+// 别名（整表重校验于是每次添加都只报「收到：C:」，而手机上没有一个入口能改它）。添加只校验这次新增
+// 的一条；坏条目读侧 warn-skip，且原样留在配置里——添加不是清理配置。
+test('添加：配置里已有非法条目时，新目录照样加得进去', async () => {
+  const srv = await startWith([{ path: a, sessionLimit: 9 }, 'C:']);
+  try {
+    const res = await emitOn(srv.s, 'folders:add', { path: 'code/b' });
+    assert.equal(res?.ok, true, `既有坏条目把添加卡死了：${JSON.stringify(res)}`);
+    assert.deepEqual(res.dirs, [a, b], '非法条目读侧应 warn-skip，不该混进白名单');
+    assert.deepEqual(JSON.parse(readFileSync(srv.cfg, 'utf8')).WORKDIRS, [{ path: a, sessionLimit: 9 }, 'C:', b],
+      '既有条目被顺手删了：添加不是清理配置');
+  } finally {
+    await srv.stop();
+  }
+});
+
 // 禁区清单在组装根里拼（~/.claude、CCM 数据目录、scratch 根）。S1 的判据用例是自己把清单传进去的——
 // 这条管的是 server 真把那三样传进去了：清空那份清单，其余用例照样全绿，而手工拼的
 // folders:add {path:'.claude'} 就会把 ~/.claude 写进 WORKDIRS（浏览看不见点目录，添加却认任意相对路径）。
