@@ -490,6 +490,20 @@ test.describe('isSupervised', () => {
     assert.equal(isSupervised({ ppid: 900, platform: 'linux', env: { INVOCATION_ID: '  ' } }), false);
   });
 
+  // 自建拉起器（Windows 的 start-ccm.cmd `:loop`）没有 launchd/systemd 那样的环境痕迹，
+  // 只能由拉起者自己声明。判据仍是「退出后有人拉起」：声明为真时放行。
+  test('显式标记 CCM_SUPERVISED=1/true：任何平台都算托管', () => {
+    assert.equal(isSupervised({ ppid: 41312, platform: 'win32', env: { CCM_SUPERVISED: '1' } }), true);
+    assert.equal(isSupervised({ ppid: 41312, platform: 'win32', env: { CCM_SUPERVISED: 'true' } }), true);
+    assert.equal(isSupervised({ ppid: 900, platform: 'linux', env: { CCM_SUPERVISED: ' 1 ' } }), true);
+  });
+
+  test('标记只认 1/true：0、false、空串、其它值都不算', () => {
+    for (const v of ['0', 'false', '', '   ', 'yes', 'on']) {
+      assert.equal(isSupervised({ ppid: 41312, platform: 'win32', env: { CCM_SUPERVISED: v } }), false, v);
+    }
+  });
+
   test('无参调用不抛错（读真实 process）', () => {
     assert.equal(typeof isSupervised(), 'boolean');
   });
