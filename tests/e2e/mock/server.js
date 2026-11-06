@@ -228,6 +228,9 @@ let bgLockedArmed = false;
 // 真 server 侧靠 resolveGoneWorktreeParent 的 existsSync 判定，mock 没有文件系统，用开关模拟：
 // 列表行带 worktreeGone、instances 里驾驶轴 cwd 仍悬空而 panelCwd 回落父仓、switch 直接拒。
 let worktreeGoneArmed = false;
+// 2026-11-06：「自动会话」分组（程序 / 子 agent 经 SDK 提交的会话）。真 server 由 history.js 读首条
+// user 消息的 turnOrigin 判定；mock 没有 transcript，用开关把一条列表行标成 automated。
+let automatedSessionsArmed = false;
 // P0-11z：抽屉保持打开时，第二次 session:list 才出现 terminal=busy；期间不发 instances，
 // 验证前端低频 revalidate 能独立刷新 CLI 状态。
 let terminalRefreshArmed = false;
@@ -791,6 +794,7 @@ function resetMockState() {
   desktopBadgeArmed = false;
   bgLockedArmed = false;
   worktreeGoneArmed = false;
+  automatedSessionsArmed = false;
   terminalRefreshArmed = false;
   terminalRefreshListCount = 0;
   terminalSummaryOtherArmed = false;
@@ -1668,6 +1672,7 @@ function mainCwdSessions() {
       model: 'claude-3-5-sonnet',
       lastUsedAt: mockListClockBase - 600000,
       entrypoint: 'sdk-ts',
+      ...(automatedSessionsArmed ? { automated: true } : {}),
       ...(terminalWaitingArmed ? { terminal: 'waiting', terminalSource: 'cli' }
         : desktopBadgeArmed ? { terminal: 'busy', terminalSource: 'claude-desktop' }
           : terminalBadgeArmed ? { terminal: 'busy', terminalSource: 'cli' } : {}),
@@ -6068,6 +6073,18 @@ io.on('connection', socket => {
         if (mainInst) mainInst.title = 'Renamed After Reconnect';
         reconnectSettleMarkerArmed = true;
         setTimeout(() => socket.disconnect(true), 50);
+      },
+    },
+    {
+      // 2026-11-06：抽屉把程序自动提交的会话（插件 / 子 agent 经 SDK 发起）单独成组、默认收起。
+      // 场景只把 mock-session-archived 标成 automated，验证分组头与展开行为；行本身仍是普通会话行。
+      commands: ['test:automated-sessions'],
+      run: async ({ cmd }) => {
+        automatedSessionsArmed = true;
+        socket.emit('agent:event', {
+          seq: 1, epoch: activeEpoch, sessionId: 'mock-session-visual-test', instanceId: viewingInstanceId, ts: Date.now(),
+          type: 'result', payload: { text: `${cmd} ready` },
+        });
       },
     },
     {

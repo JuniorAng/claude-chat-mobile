@@ -16,6 +16,14 @@ test('shouldRerenderSessionList: 内容完全一致（id/title/lastUsedAt 相同
   assert.equal(shouldRerenderSessionList({ hasPrevEntry: true, prevSessions: prev, prevHasMore: false, nextSessions: next, nextHasMore: false }), false);
 });
 
+// automated 决定这一行走主列表还是「自动会话」组。只翻转这个标志时 id/title/时间都没变，
+// 漏进签名就会让分组停在旧位置（会话已经改成自动的，界面还把它当人手发的）。
+test('shouldRerenderSessionList: 只翻转 automated 也需要重渲染', () => {
+  const prev = [{ id: 's1', title: 'Foo', lastUsedAt: 100 }];
+  const next = [{ id: 's1', title: 'Foo', lastUsedAt: 100, automated: true }];
+  assert.equal(shouldRerenderSessionList({ hasPrevEntry: true, prevSessions: prev, nextSessions: next }), true);
+});
+
 test('shouldRerenderSessionList: 标题真变了必须检测到（防回归：不能为了少重渲而漏真变化）', () => {
   const prev = [{ id: 's1', title: 'Old Title', lastUsedAt: 100 }];
   const next = [{ id: 's1', title: 'New Title', lastUsedAt: 100 }];

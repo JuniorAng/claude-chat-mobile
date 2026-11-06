@@ -3,7 +3,7 @@
 // #359 Step 4 从 app.js 原样迁出；只有本模块用的几份状态（显示更多档位、终端聚合态、保鲜计时器、未读跳转）随代码搬入，
 // 与 app.js 共用的可变态经 getter / setter 注入，声明在实例化点之后的依赖经惰性包装注入。
 
-import { MISSING_FOLDERS_NOTICE_ID, disconnectFolderConfirm, displaySessionTitle, esc, folderReasonText, folderRowMenuItems, formatServiceNoticeRows, formatSessionRowSubtitle, formatSessionRowTime, liveRowsForSection, mergeOrphanRowsByTime, openSessionsUnderRoot, orphanLiveRows, remainingOlderSessionCount, resolveDrawerStatus, resolveDrawerStatusChip, resolveHeaderAttentionChip, resolveHeaderConnBadge, resolveRowTerminalState, sessionRowMenuItems, shouldRerenderSessionList, summarizeOtherWorkspaces, undismissedServiceNotices, unownedLiveInstances, whatNeedsAttention } from '../logic.js';
+import { MISSING_FOLDERS_NOTICE_ID, disconnectFolderConfirm, displaySessionTitle, esc, folderReasonText, folderRowMenuItems, formatServiceNoticeRows, formatSessionRowSubtitle, formatSessionRowTime, liveRowsForSection, mergeOrphanRowsByTime, openSessionsUnderRoot, orphanLiveRows, remainingOlderSessionCount, resolveDrawerStatus, resolveDrawerStatusChip, resolveHeaderAttentionChip, resolveHeaderConnBadge, resolveRowTerminalState, sessionRowMenuItems, shouldRerenderSessionList, splitAutomatedRows, summarizeOtherWorkspaces, undismissedServiceNotices, unownedLiveInstances, whatNeedsAttention } from '../logic.js';
 import { attachFolderDrag } from './folder-drag.js';
 import { bindSessionRowsHost, bindSessionSearchInput } from './session-search.js';
 import { createDrawerUnreadJump } from './drawer-unread-jump.js';
@@ -29,6 +29,10 @@ export function createSessionSidebar(context, {
   // 是"当下拿到的那一份"，记不住用户要看更多这个意图——而 populateSubtree 每次都会无条件 revalidate，
   // 不带上 more 就会把展开态悄悄打回第一档（P0-11x）。
   const moreStepsByDir = new Map();
+  // 每个目录的「自动会话」分组是否展开。缺省 = 自动：组内有活实例或正是当前查看的会话就展开，
+  // 否则收起。用户点过之后按 'open' / 'closed' 记住（页面生命周期内）。插件 / 子 agent 的独立会话
+  // 不该跟人手发的会话抢同一层视线，但正在跑的 / 正看着的不能因为收起而整行消失。
+  const automatedGroupStateByDir = new Map(); // cwd → 'open' | 'closed'
   // session:list 附带的 CLI registry 快照：每个 cwd 的终端聚合态（'waiting' | 'busy'，无则不存键）。
   // 与 Web workdirStates 独立保存并在抽屉显示层合并，避免 live idle/done 遮住终端运行态。
   // 存单值而后端给两个布尔：目录行只有一个角标位，同 cwd 两态并存时取更要紧的那个（等人 > 在跑）。
@@ -376,7 +380,7 @@ export function createSessionSidebar(context, {
   function unreadSessionsForDir(cwd) {
     const entry = sessionsCache.get(cwd);
     if (!entry || String(entry.query || '')) return null;
-    return unreadSessionsInGroup(entry, s => unread.isUnread(s, { isViewing: s.id === getDisplayedSessionId() }));
+    return unreadSessionsInGroup(entry, s => !s.automated && unread.isUnread(s, { isViewing: s.id === getDisplayedSessionId() }));
   }
   function unreadCountForDir(cwd) {
     return unreadSessionsForDir(cwd)?.length ?? null;
@@ -436,6 +440,7 @@ export function createSessionSidebar(context, {
     rowContent.dataset.terminalState = s.terminal || '';
     rowContent.dataset.terminalSource = s.terminalSource || '';
     rowContent.dataset.bgLocked = s.bgLocked ? '1' : '';
+    rowContent.dataset.automated = s.automated ? '1' : '';
     const btn = el(`<button class="flex-1 min-w-0 text-left text-xs active:opacity-70"></button>`);
     btn.title = displaySessionTitle(s.title, t('新会话'));
     const head = el(`<div data-session-head class="flex items-center gap-1.5 min-w-0"></div>`);
@@ -446,8 +451,12 @@ export function createSessionSidebar(context, {
     // 上次打开后有新活动或在「⋯」菜单里标过才亮；正在看的（本实例激活或就是当前显示会话）不算未读。
     // 抽成函数：菜单里标记后原地重刷这一行，不等整个列表重画。
     const isViewingRow = active || s.id === getDisplayedSessionId();
+    // 自动会话不会成为「需要你回头处理」的未读：它们本来就是程序提交的，逐条亮未读只会把目录角标
+    // 和跳转路径变成噪音（列表按数据算角标、按 DOM 找行，收起组里的行又找不到——不排除就会自相矛盾）。
+    const rowUnread = () => Boolean(s.id) && !s.automated
+      && unread.isUnread(s, { isViewing: isViewingRow });
     const applyUnreadMark = () => {
-      const on = Boolean(s.id) && unread.isUnread(s, { isViewing: isViewingRow });
+      const on = rowUnread();
       titleSpan.classList.toggle('font-semibold', on);
       titleSpan.classList.toggle('font-medium', !on);
       if (!active) {
@@ -505,17 +514,22 @@ export function createSessionSidebar(context, {
     // 行尾「⋯」是这一行唯一的入口（2026-10-25，对齐桌面端）：此前 ✕、🗑、红色侧滑「关闭」三处并存，侧滑还和
     // 抽屉的左滑收起抢同一次手势——露出按钮后多滑 30px 抽屉就被收走。长按不再有动作。
     // 哪些项、何时灰掉见 logic 的 sessionRowMenuItems。
-    const menuItems = () => sessionRowMenuItems({
-      hasId: Boolean(s.id),
-      live: Boolean(liveInst),
-      // 正看着的会话同样能标「稍后再看」并当场亮起：手动标记不受 isViewing 管辖（见 logic/unread.js
-      // 里那两条短路的顺序注），所以这里问 isUnread 一个就够，不必再叠 isManualUnread。
-      unread: Boolean(s.id) && unread.isUnread(s, { isViewing: isViewingRow }),
-    });
+    const menuItems = () => {
+      const items = sessionRowMenuItems({
+        hasId: Boolean(s.id),
+        live: Boolean(liveInst),
+        // 正看着的会话同样能标「稍后再看」并当场亮起：手动标记不受 isViewing 管辖（见 logic/unread.js
+        // 里那两条短路的顺序注），所以这里问 isUnread 一个就够，不必再叠 isManualUnread。
+        unread: rowUnread(),
+      });
+      // 自动会话不参与未读（rowUnread 恒 false）。留着「标为未读」只会写进一个永远不显示的状态：
+      // 点了没 chip、菜单下次还写「标为未读」。直接不给这个入口，其余重命名/删除照旧。
+      return s.automated ? items.filter(item => item.action !== 'toggle-read') : items;
+    };
     const runMenuAction = async action => {
       if (action === 'toggle-read') {
         haptic('tap');
-        unread.setManualUnread(s.id, !unread.isUnread(s, { isViewing: isViewingRow }));
+        unread.setManualUnread(s.id, !rowUnread());
         applyUnreadMark();
         refreshDirUnreadCounts();
       } else if (action === 'close') {
@@ -784,8 +798,42 @@ export function createSessionSidebar(context, {
           orphans = orphanLiveRows(liveMap, listedIds)
             .map(inst => openById.get(inst.sessionId) || { id: inst.sessionId, title: inst.title, lastUsedAt: null, entrypoint: null });
         }
-        for (const s of mergeOrphanRowsByTime(sessions, orphans)) {
-          rowsHost.appendChild(sessionRow(s, liveMap.get(s.id), cwd));
+        const ordered = mergeOrphanRowsByTime(sessions, orphans);
+        const { main: mainRows, automated: automatedRows } = splitAutomatedRows(ordered);
+        // 搜索态不分组：用户带着明确关键词来找，匹配到的行必须直接出现；把唯一匹配项藏在收起组里
+        // 会得到「只有一个组头、一条结果都没有」，比混排更糟。
+        if (query) {
+          for (const s of ordered) rowsHost.appendChild(sessionRow(s, liveMap.get(s.id), cwd));
+        } else {
+          for (const s of mainRows) {
+            rowsHost.appendChild(sessionRow(s, liveMap.get(s.id), cwd));
+          }
+          // 自动会话（turnOrigin==='sdk'：插件 / 子 agent 通过 SDK 提交的会话）单独成组。
+          // 它们跟人手发的会话混在同一层时，用户无法一眼认出「哪条才是我要接着干的主会话」。
+          // 分组只改展示：组内仍是正常 sessionRow，点开 / 删除 / 重命名全部照旧。
+          if (automatedRows.length) {
+            const forced = automatedGroupStateByDir.get(cwd);
+            // 活着的 / 正在看的自动会话默认展开：收起一组 DOM 不留行，顶栏「需要你(N)」却可能正在数它，
+            // 用户会看到一个报警却找不到可处理的会话。用户显式收起（'closed'）后尊重选择。
+            const autoOpen = automatedRows.some(s => liveMap.has(s.id)
+              || (s.id && s.id === getDisplayedSessionId()));
+            const expanded = forced === 'open' || (forced !== 'closed' && autoOpen);
+            const head = el(`<button type="button" class="w-full flex items-center gap-1.5 pl-6 pr-3 py-2 text-[11px] text-ink-faint border-b border-line-soft/40 hover:bg-sunk/30 active:opacity-70 text-left" data-testid="session-automated-head"></button>`);
+            const help = t('由程序或子 agent 自动创建，不是你亲手发的会话');
+            head.textContent = `${expanded ? '▾' : '▸'} ${t('自动会话')} · ${automatedRows.length}`;
+            head.title = help;
+            head.setAttribute('aria-label', `${t('自动会话')} · ${automatedRows.length}。${help}`);
+            head.setAttribute('aria-expanded', expanded ? 'true' : 'false');
+            head.onclick = () => {
+              haptic('tap');
+              automatedGroupStateByDir.set(cwd, expanded ? 'closed' : 'open');
+              renderRows(sessions, hasMore, total, pinned, open, moreCount);
+            };
+            rowsHost.appendChild(head);
+            if (expanded) {
+              for (const s of automatedRows) rowsHost.appendChild(sessionRow(s, liveMap.get(s.id), cwd));
+            }
+          }
         }
         if (query && sessions.length === 0) {
           const empty = el(`<div class="pl-6 pr-3 py-3 text-xs text-ink-faint border-b border-line-soft/40" data-testid="session-search-empty">${t('无匹配会话')}</div>`);
@@ -1094,7 +1142,8 @@ export function createSessionSidebar(context, {
       if (!title) continue;
       const id = item.dataset.sessionId;
       const lastUsedAt = Number(item.dataset.lastUsedAt);
-      const shouldMark = unread.isUnread(
+      // 自动会话不参与未读（与渲染侧同一条政策）；dataset 是这条路唯一的归类来源。
+      const shouldMark = item.dataset.automated !== '1' && unread.isUnread(
         { id, lastUsedAt: Number.isFinite(lastUsedAt) ? lastUsedAt : undefined },
         { isViewing: id === getDisplayedSessionId() },
       );
