@@ -22,10 +22,10 @@ import { isSerializableEnvValue, maskSecret, shellOverriddenKeys } from './env-f
 // 与 server 启动、两个 doctor 共用同一份 loopback 判据：这里若自己再写一遍「什么算本机地址」，
 // 面板放行的配置就可能与 server 实际拒绝的配置对不上。
 import { homedir } from 'node:os';
-import { isAbsolute as isAbsoluteWin32 } from 'node:path/win32';
 import { isLoopbackBindHost } from '../shared/bind-host.js';
 import { isBareHostname } from '../shared/public-target.js';
 import { overlyBroadWorkdir } from '../shared/workdir-broad.js';
+import { isHostAbsolute } from '../shared/host-platform.js';
 
 // 开关类的真值字面量**逐 key 声明**，绝不用统一的 truthy 判定。
 // src/ops/log-terminal.js:32 明写过这个经典脚枪：LOG_STDERR=false 反而是「开」——
@@ -431,10 +431,7 @@ export { overlyBroadWorkdir };
 // 手机端加文件夹、config set CLAUDE_BIN/WORKDIRS 全走这道。反过来，POSIX 宿主上放行 win32 形态
 // 也是错的：读侧的 resolveWorkdirs 用 realpathSync.native 解析，会把 C:\… 当成相对当前目录的
 // 普通文件名，正是「启动后 cwd 未必是仓库根」要防的那类静默漂移。
-function isAbsoluteAnyPlatform(p) {
-  const s = String(p);
-  return s.startsWith('/') || (process.platform === 'win32' && isAbsoluteWin32(s));
-}
+// 宿主平台开关单一事实源在 shared/host-platform.js，与读侧（workdirs.js）同一份。
 
 // list（当前只有 WORKDIRS）的结构校验。
 //
@@ -453,7 +450,7 @@ function checkList(value, def, home) {
     // ★ 必须是绝对路径。checkOne 的 path kind 早就有这道（理由：启动后 cwd 未必是仓库根），
     // 而 list 独独漏了 —— 实测 ['..'] 能通过校验，realpath 相对 cwd 解析后把仓库父目录
     // 整棵树放进白名单。白名单是 claude 的文件作用域边界，不是展示用的列表。
-    if (!isAbsoluteAnyPlatform(path)) {
+    if (!isHostAbsolute(path)) {
       return `${def.label.zh} 的每项必须是绝对路径（启动后 cwd 未必是仓库根），收到：${JSON.stringify(path)}`;
     }
     // 过宽根：与装机向导同一份判据（见 overlyBroadWorkdir 头注）。装机时被硬拒的东西，
@@ -532,7 +529,7 @@ function checkOne(key, value, def, d) {
   }
 
   if (def.kind === 'path') {
-    if (!isAbsoluteAnyPlatform(value)) return `${def.label.zh} 必须是绝对路径（启动后 cwd 未必是仓库根）`;
+    if (!isHostAbsolute(value)) return `${def.label.zh} 必须是绝对路径（启动后 cwd 未必是仓库根）`;
     if (def.mustExist && !d.fileExists(value)) return `路径不存在：${value}`;
     if (def.executable && !d.isExecutable(value)) return `文件不可执行：${value}`;
     return null;

@@ -673,6 +673,7 @@ function createMockFolderTree() {
 let mockFolderTree = createMockFolderTree();
 let mockAddedFolders = []; // folders:add 加进来的（绝对路径），并进 mockDirs()
 let mockFoldersAddError = null; // test:folders-readonly：模拟工作区列表来自环境变量的安装（真 server 回 source_readonly）
+let mockFolderWindows = true; // /__folder-platform?windows=0：模拟 server 跑在 POSIX 宿主（文案换成「文件系统 / 位置」）
 let mockAutoModeDisabled = false; // /__arm-auto-mode-disabled：本区 settings 写了 disableAutoMode（#461）
 // /__arm-mcp-live（#457）：mcp:status 现查得到（真 server 有活实例时）。null = 没有活实例，回 live:false，前端用 init 快照
 let mockMcpLive = null;
@@ -721,6 +722,7 @@ function resetMockState() {
   mockSubProjects = [];
   mockScratchSessions = [];
   mockFolderTree = createMockFolderTree();
+  mockFolderWindows = true;
   mockAddedFolders = [];
   mockRootOrder = [];
   mockReorderFail = false;
@@ -1108,6 +1110,13 @@ app.post('/__arm-auto-mode-disabled', (_req, res) => {
   mockAutoModeDisabled = true;
   broadcastMockInstances();
   res.json({ ok: true });
+});
+
+// 文件夹选择器：模拟 server 跑在 POSIX 宿主（Windows 盘符文案 ↔ 文件系统文案）。
+// 真 server 按 process.platform 回，这里拨给 E2E 验另一支；默认 Windows，既有盘符用例不受影响。
+app.post('/__folder-platform', (req, res) => {
+  mockFolderWindows = req.query?.windows !== '0';
+  res.json({ ok: true, windows: mockFolderWindows });
 });
 
 // MCP 实时状态（#457）：五种状态各一台，名字里塞一段 HTML 验转义（名字是用户 / 插件写的配置键）。
@@ -3676,6 +3685,7 @@ io.on('connection', socket => {
       ok: true, home: MOCK_HOME, path: mockFolderAbs(key),
       parent: parent == null ? null : mockFolderAbs(parent),
       roots: [{ name: 'Data', path: MOCK_EXTRA_ROOT }],
+      windows: mockFolderWindows, // mock 模拟 Windows 宿主：盘符文案（真 server 按宿主平台回）
       reason: mockFolderReason(key),
       entries: mockFolderTree[key].map(name => {
         const child = mockFolderChildKey(key, name);

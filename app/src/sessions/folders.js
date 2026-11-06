@@ -7,11 +7,16 @@
 //
 // 协议里的位置：'' = 家目录；相对路径 = 以家目录为根（出界即拒）；绝对路径 = 电脑上的那个目录，
 // 家目录内外都行。浏览回执与每条子目录都带绝对路径，客户端不必自己拼服务端路径。
-import { existsSync, lstatSync, mkdirSync, readdirSync, realpathSync, rmdirSync, statSync } from 'node:fs';
+import { lstatSync, mkdirSync, readdirSync, realpathSync, rmdirSync, statSync } from 'node:fs';
 import { dirname, isAbsolute, join, parse, resolve } from 'node:path';
 import { findWorktreeOwner, isWithin } from './folder-access.js';
 import { managedWorktreeRoot } from './workdirs.js';
 import { overlyBroadWorkdir } from '../shared/workdir-broad.js';
+import { browseRoots, isWindowsHost } from '../shared/host-platform.js';
+
+// 可浏览的文件系统根（Windows 盘符 / POSIX 的 /）由 shared/host-platform.js 给出，
+// 这里原样导出，保持既有 import 面不变。
+export { browseRoots };
 
 export const MAX_BROWSE_ENTRIES = 500;
 const MAX_NAME_BYTES = 255; // 文件系统单段名字上限（字节，不是字符）
@@ -40,29 +45,9 @@ function resolveCandidate(input, home) {
   return { real, homeReal };
 }
 
-// 浏览的上一层：磁盘根没有上一层（null），客户端据此显示「此电脑」。
+// 浏览的上一层：文件系统根（POSIX 的 /、Windows 的盘符根）没有上一层（null），
+// 客户端据此显示「此电脑 / 文件系统」那一屏。
 const parentOf = real => { const parent = dirname(real); return parent === real ? null : parent; };
-
-// 可浏览的文件系统根：Windows 列真实存在的盘符（C:..Z:），其余平台只有 /。
-// 只看盘符存不存在，不读盘里任何东西——客户端据此从家目录跳到别的磁盘。
-// 结果缓存一小段时间：existsSync 打在离线的网络盘/空光驱上可能阻塞事件循环，而它此前会在
-// **每次浏览**（包括本地目录）时同步跑 26 次，一次点击就可能拖住所有在跑的会话与审批推送。
-// 跳过 A:/B:（软驱位，现代机器上几乎不存在且最容易触发超时）。注入的探测函数不进缓存（测试）。
-const ROOTS_TTL_MS = 30_000;
-let rootsCache = null;
-export function browseRoots({ platform = process.platform, exists = existsSync, now = Date.now } = {}) {
-  if (platform !== 'win32') return [{ name: '/', path: '/' }];
-  const injected = exists !== existsSync;
-  if (!injected && rootsCache && now() - rootsCache.at < ROOTS_TTL_MS) return rootsCache.roots;
-  const roots = [];
-  for (let code = 67; code <= 90; code += 1) {
-    const letter = String.fromCharCode(code);
-    const path = `${letter}:\\`;
-    if (exists(path)) roots.push({ name: `${letter}:`, path });
-  }
-  if (!injected) rootsCache = { at: now(), roots };
-  return roots;
-}
 
 // 这个目录能不能加成已连接的文件夹。null = 能；否则是拒绝原因（前端据此置灰并说明）。
 // ctx：home 家目录 · forbidden 禁区（~/.claude、CCM 数据目录、scratch 根）· connected 已连接的文件夹
@@ -116,8 +101,11 @@ export function browseFolderNames(path, ctx = {}) {
     home: at.homeReal, // 客户端据此把家目录内的位置显示成 ~/…
     // 绝对路径：家目录外的位置用相对路径表达不了，客户端也不该自己拼服务端路径。
     path: at.real,
-    parent: parentOf(at.real), // null = 磁盘根，上一层是「此电脑」
+    parent: parentOf(at.real), // null = 文件系统根，上一层是「此电脑 / 文件系统」
     roots: browseRoots(),      // 可跳转的文件系统根（Windows 盘符 / POSIX 的 /）
+    // 客户端据此选文案：Windows 说「此电脑 / 磁盘」，POSIX 说「文件系统 / 位置」。
+    // 以服务端宿主为准，不是因为手机是什么系统——浏览的是 server 那台电脑。
+    windows: isWindowsHost(),
     reason: connectRefusalReason(at.real, ctx),
     entries: shown.map(name => ({
       name,

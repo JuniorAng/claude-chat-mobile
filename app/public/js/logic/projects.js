@@ -23,6 +23,28 @@ export function relPathUnder(p, root) {
   return p.slice(root.replace(/[/\\]+$/, '').length).split(/[/\\]+/).filter(Boolean).join('/');
 }
 
+// 「文件系统根」那一屏的文案：Windows 是盘符（此电脑 / 磁盘），POSIX 是 /（文件系统 / 位置）。
+// 判据是 server 跑在哪个系统上（浏览回执里的 windows），不是手机是什么系统——手机看的是那台电脑。
+// 表里用 tk 只做标记，取用点才 t()（模块顶层不能 t()，见 i18n.js 头注）。
+const FOLDER_ROOT_TEXT = Object.freeze({
+  win: Object.freeze({
+    title: tk('此电脑'), section: tk('磁盘'), empty: tk('没有可浏览的磁盘'),
+    jump: tk('此电脑'), jumpSub: tk('浏览其他磁盘'),
+  }),
+  posix: Object.freeze({
+    title: tk('文件系统'), section: tk('位置'), empty: tk('没有可浏览的位置'),
+    jump: tk('文件系统'), jumpSub: tk('浏览整个文件系统'),
+  }),
+});
+export function folderRootLabels(windows) {
+  const m = windows ? FOLDER_ROOT_TEXT.win : FOLDER_ROOT_TEXT.posix;
+  return {
+    title: t(m.title), section: t(m.section), empty: t(m.empty),
+    jump: t(m.jump), jumpSub: t(m.jumpSub),
+    root: windows ? null : t('根目录'),
+  };
+}
+
 export function normalizeProjects(payload) {
   const raw = Array.isArray(payload?.projects) ? payload.projects : null;
   if (!raw) {

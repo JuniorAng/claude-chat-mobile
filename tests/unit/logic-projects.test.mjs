@@ -4,7 +4,7 @@
 // 载荷里没有它时（旧服务端、E2E mock 的旧载荷、在线演示站）回落到 dirs，每个目录一节——与改动前逐字相同。
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { normalizeProjects, projectLabel, isPathWithin, relPathUnder } from '../../app/public/js/logic/projects.js';
+import { normalizeProjects, projectLabel, isPathWithin, relPathUnder, folderRootLabels } from '../../app/public/js/logic/projects.js';
 import { setLang } from '../../app/public/js/i18n.js';
 
 test('没有 projects：回落到 dirs，每个目录一节', () => {
@@ -133,4 +133,23 @@ test('relPathUnder：相对路径一律用 / 分隔（协议里的位置是 / �
   assert.equal(relPathUnder('C:\\Users\\you\\code\\app', 'C:\\Users\\you'), 'code/app',
     'Windows 上点进已连接的文件夹会报「不在家目录里」');
   assert.equal(relPathUnder('C:\\Users\\you2\\x', 'C:\\Users\\you'), null);
+});
+
+// 文件系统根那一屏的文案跟 server 宿主走：Windows 是盘符，POSIX 是 /。
+// 判据错成手机系统的话，Ubuntu 上的手机会看到「此电脑 / 磁盘」却只有一个 /。
+test('folderRootLabels：Windows 说盘符，POSIX 说文件系统；两种语言都覆盖', () => {
+  setLang('zh');
+  assert.deepEqual(folderRootLabels(true), {
+    title: '此电脑', section: '磁盘', empty: '没有可浏览的磁盘',
+    jump: '此电脑', jumpSub: '浏览其他磁盘', root: null,
+  });
+  assert.deepEqual(folderRootLabels(false), {
+    title: '文件系统', section: '位置', empty: '没有可浏览的位置',
+    jump: '文件系统', jumpSub: '浏览整个文件系统', root: '根目录',
+  });
+  setLang('en');
+  assert.equal(folderRootLabels(false).title, 'Filesystem');
+  assert.equal(folderRootLabels(false).root, 'Root');
+  assert.equal(folderRootLabels(true).section, 'Drives');
+  setLang('zh');
 });

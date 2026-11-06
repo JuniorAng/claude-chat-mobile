@@ -60,6 +60,7 @@ test('浏览只回真实目录的名字：文件、FIFO、symlink、点目录都
   assert.equal(res.parent, home);
   assert.equal(res.home, ctx.home, '客户端要靠它把家目录内的位置显示成 ~/…');
   assert.ok(Array.isArray(res.roots) && res.roots.length > 0, '没有盘符列表，客户端就没法从家目录跳到 D:');
+  assert.equal(res.windows, process.platform === 'win32', '客户端靠这个字段选「此电脑 / 磁盘」还是「文件系统 / 位置」文案');
   for (const e of res.entries) assert.deepEqual(Object.keys(e).sort(), ['name', 'path', 'reason']);
   assert.equal(res.entries[0].path, join(home, 'code', 'app'), '客户端直接拿它当子目录的位置，不该自己拼路径');
 });

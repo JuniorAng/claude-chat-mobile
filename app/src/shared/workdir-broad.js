@@ -13,6 +13,7 @@
 //      只在词法层比会漏 symlink；只在落点层比会漏「尚不存在」的路径与各平台的规范形态。
 import { realpathSync } from 'node:fs';
 import { resolve, win32 } from 'node:path';
+import { isWindowsHost } from './host-platform.js';
 
 const OVERLY_BROAD_ROOTS = ['/', '/Users', '/home', '/root'];
 
@@ -48,7 +49,7 @@ function broadRootForms() {
 // p 是不是 child 的祖先（带分隔符边界；/home/tester2 不是 /home/tester 的祖先）。
 // Windows 路径不分大小写；两侧都已经过 resolve/realpath 归一。
 function isAncestor(parent, child) {
-  const norm = s => (process.platform === 'win32' ? s.toLowerCase() : s);
+  const norm = s => (isWindowsHost() ? s.toLowerCase() : s);
   const base = stripTrailingSep(norm(parent));
   const c = norm(child);
   return c.length > base.length && c.startsWith(base) && /[/\\]/.test(c[base.length]);

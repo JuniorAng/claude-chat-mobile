@@ -9,7 +9,7 @@
 // 开合走 sheets 原语；数据只走 folders:browse / folders:add / folders:mkdir 三条事件，判据全在服务端
 // （FOLDER-01）——这里不替服务端判断能不能加，只把它的原因码翻成人话。
 import { t } from '../i18n.js';
-import { folderReasonText, projectLabel, relPathUnder } from '../logic/projects.js';
+import { folderRootLabels, folderReasonText, projectLabel, relPathUnder } from '../logic/projects.js';
 
 const ACK_TIMEOUT_MS = 8000;
 
@@ -21,6 +21,7 @@ export function createFolderPicker({ $, el, socket, openSheet, closeSheet, hapti
   const status = $('folderPickerStatus');
   let home = null; // 家目录的真实路径：服务端在每次浏览回执里给，用来把家目录内的绝对路径显示成 ~/…
   let roots = []; // 可跳转的文件系统根（Windows 盘符 / POSIX 的 /）
+  let hostWindows = true; // server 跑在 Windows 上？服务端回执里的 windows 字段说了算（文案用）
   let rootsReturn = null; // 进「此电脑」前那一屏：返回键回到它，而不是一脚踢出添加流程
   let view = { mode: 'root' };
   let gen = 0; // 浏览请求代次：快速连点时只认最后一次的回执
@@ -41,6 +42,7 @@ export function createFolderPicker({ $, el, socket, openSheet, closeSheet, hapti
   const applyAck = r => {
     home = r.home;
     if (Array.isArray(r.roots)) roots = r.roots;
+    if (typeof r.windows === 'boolean') hostWindows = r.windows;
   };
 
   function setStatus(text) {
@@ -132,27 +134,28 @@ export function createFolderPicker({ $, el, socket, openSheet, closeSheet, hapti
     await browse(purpose, startAbs == null ? '' : startAbs, startAbs);
   }
 
-  // 此电脑：列盘符（Windows）或根（POSIX）。只在 add 流程里出现——挑子文件夹时不越过已连接的根。
+  // 文件系统根：Windows 列盘符，POSIX 只有 /。文案跟着 server 宿主走——手机上看到的是那台电脑。
   function renderRoots() {
     rootsReturn = view.mode === 'browse' ? view : null;
     view = { mode: 'roots' };
     gen += 1;
-    title.textContent = t('此电脑');
+    const labels = folderRootLabels(hostWindows);
+    title.textContent = labels.title;
     back.classList.remove('hidden');
     body.innerHTML = '';
     setStatus('');
     const head = el('<div class="px-4 pt-3 pb-1 text-[10px] uppercase tracking-wide text-ink-faint"></div>');
-    head.textContent = t('磁盘');
+    head.textContent = labels.section;
     body.appendChild(head);
     if (!roots.length) {
       const empty = el('<div class="px-4 py-4 text-xs text-ink-faint"></div>');
-      empty.textContent = t('没有可浏览的磁盘');
+      empty.textContent = labels.empty;
       body.appendChild(empty);
       return;
     }
     for (const r of roots) {
       body.appendChild(row({
-        icon: '💽', label: r.name || r.path, sub: r.path, testid: 'folder-picker-root',
+        icon: '💽', label: labels.root ?? (r.name || r.path), sub: r.path, testid: 'folder-picker-root',
         onClick: () => browse('add', r.path, null),
       }));
     }
@@ -194,8 +197,9 @@ export function createFolderPicker({ $, el, socket, openSheet, closeSheet, hapti
     body.appendChild(actions);
 
     if (purpose === 'add') {
+      const labels = folderRootLabels(hostWindows);
       body.appendChild(row({
-        icon: '💽', label: t('此电脑'), sub: t('浏览其他磁盘'), testid: 'folder-picker-roots',
+        icon: '💽', label: labels.jump, sub: labels.jumpSub, testid: 'folder-picker-roots',
         onClick: renderRoots,
       }));
     }
