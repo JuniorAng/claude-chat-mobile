@@ -10,6 +10,7 @@ import { readFileSync } from 'node:fs';
 // 完整性告警。哈希用 node 同步版而非 fingerprintHex（Web Crypto，异步）：会漂移的是规范化不是 SHA-256，
 // 两者逐字节等价已实测。注意这不违反本文件「零 import app/src/」的约束——canonicalize.js 住在 app/public/js。
 import { canonicalizeOp } from '../../../app/public/js/canonicalize.js';
+import { CLIP_WEBM } from '../../fixtures/media.mjs';
 
 const mockFingerprint = (name, input, cwd) =>
   createHash('sha256').update(canonicalizeOp({ tool: name, args: input, cwd })).digest('hex');
@@ -107,6 +108,7 @@ let pushTestNtfy = null;
 let untitledSessionArmed = false;
 let pendingPermission = null;
 let pendingQuestion = null;
+let taskOutputPolls = 0; // test:taskoutput-running：bg_shell_1 被问了几次，每次输出多一行
 let pendingQuestionGroup = null; // test:question-group*：一次问多道、整组作答
 let questSeq = 0; // 每次 test:question* 递增，避免 TC-5 答过后 TC-5b 同 requestId 被 answeredQuestionIds 吞掉
 let syncPendingSnapshot = null; // Bug2：模拟真 server sync:since 的 ack.pending 快照（切入时重建待审批卡片）
@@ -708,6 +710,7 @@ const mockFolderPathOk = p => typeof p === 'string' && !p.split(/[/\\]/).include
 let mockScenarioErrors = [];
 
 function resetMockState() {
+  taskOutputPolls = 0;
   mockResetGeneration += 1;
   resetAuthCooldown();
   mockApproveLog = [];
@@ -1033,6 +1036,15 @@ function emitTrustedDevices() {
     type: 'trusted_devices', payload: { accessBypassActive, devices: trustedDevices }
   });
 }
+
+// 真路由的鉴权、范围、Range 在 tests/invariants/server/file-ticket-route.test.mjs；这里只回字节，给 E2E 看前端怎么用。
+app.get('/f/:ticket', (req, res) => {
+  const relPath = req.params.ticket;
+  const file = MOCK_BINARY_FILES.get(relPath);
+  if (file?.media && req.query.download === undefined) res.type(file.mime);
+  else res.attachment(relPath.split('/').pop());
+  res.send(file?.bytes ?? 'mock text');
+});
 
 app.get('/__approve-log', (_req, res) => res.json(mockApproveLog));
 
@@ -1740,6 +1752,14 @@ const MOCK_ATTACH_PNG = Buffer.from(
 const MOCK_UPLOAD_FILES = new Map([
   ['1700000000000-abcd1234-photo.png', MOCK_ATTACH_PNG],
   ['1700000000001-deadbeef-old.png', MOCK_ATTACH_PNG],
+]);
+
+// 文件链接：file:open 的票据在 mock 里就是 relPath，/f/ 按它回这张表的字节。
+const MOCK_BINARY_FILES = new Map([
+  ['media/cover.png', { bytes: MOCK_ATTACH_PNG, mime: 'image/png', media: 'image' }],
+  ['media/clip.webm', { bytes: CLIP_WEBM, mime: 'video/webm', media: 'video' }],
+  ['media/broken.png', { bytes: Buffer.from('not a png'), mime: 'image/png', media: 'image' }],
+  ['media/out.zip', { bytes: Buffer.from('not really a zip'), mime: 'application/octet-stream', media: null }],
 ]);
 
 // 会话里的图片（对齐 server image:get）：引用 → 载荷。test:transcript-images 场景（scenarios/content.js）
@@ -3339,6 +3359,10 @@ io.on('connection', socket => {
     if (typeof callback !== 'function') return;
     // 同真 server：范围门不放行 scratch 根本身（根下是所有无文件夹会话），只放行会话自己的 scratch 目录
     if (payload?.cwd === MOCK_SCRATCH_ROOT) return callback({ ok: false, error: '这个目录不在已连接的文件夹里' });
+    if (payload?.relPath === 'media') {
+      const entries = [...MOCK_BINARY_FILES].map(([path, { bytes }]) => ({ name: path.split('/').pop(), kind: 'file', size: bytes.length, mtime: Date.now() }));
+      return callback({ ok: true, entries, truncated: false, totalCount: entries.length });
+    }
     callback({
       ok: true,
       entries: [
@@ -3358,6 +3382,20 @@ io.on('connection', socket => {
   // 只要「变了就不同、没变就相同」这个契约成立即可）。per-connection 状态，each gotoMock 一份新的。
   let mockDemoJsContent = 'function greet(name) {\n  return `Hello, ${name}!`;\n}\n';
   const mockHashOf = text => `mockhash:${text}`;
+
+  // 文件链接：回包形态同 socket-files.js 的 file:open，按 path 查 fixture，不做范围判定。
+  socket.on('file:open', (payload, callback) => {
+    if (typeof callback !== 'function') return;
+    const { cwd, path } = payload || {};
+    if (path === 'stale-backend.txt') return; // 前端已 pull、后端没重启：旧后端不认这个事件，ack 永远不来
+    if (path === 'missing/nope.txt') return callback({ ok: false, error: '文件不存在（可能已被删除或改名），请刷新列表' });
+    if (path === '../sibling/notes.txt') return callback({ ok: true, root: '/mock/sibling', relPath: 'notes.txt', kind: 'file', name: 'notes.txt', size: 30, media: null, url: '/f/notes.txt' });
+    const relPath = String(path).replace(/\/$/, '');
+    const name = relPath.split('/').pop();
+    if (relPath === 'media') return callback({ ok: true, root: cwd, relPath, kind: 'dir', name });
+    const binary = MOCK_BINARY_FILES.get(relPath);
+    callback({ ok: true, root: cwd, relPath, kind: 'file', name, size: binary?.bytes.length ?? 0, media: binary?.media ?? null, url: `/f/${encodeURIComponent(relPath)}` });
+  });
 
   // 文件浏览：browse:read（契约内事件；仅实现文本 fixture——附件的 base64 分片已归 attachment:read）。
   socket.on('browse:read', (payload, callback) => {
@@ -3397,6 +3435,25 @@ io.on('connection', socket => {
     if (encoding !== 'base64' && String(relPath || '') === 'README.md') {
       const text = '# CCM playground workspace\n\nSee [docs](https://example.com).\n';
       return callback({ ok: true, content: text, totalSize: text.length, bytesRead: text.length, truncated: false, binary: false, contentHash: mockHashOf(text) });
+    }
+    // 文件链接的行号跳转：long.js 够长才有滚动可测，走 CM；paged.log 走 pre + 分页，比自动续页的额度长得多。
+    if (encoding !== 'base64' && String(relPath || '') === 'long.js') {
+      const text = Array.from({ length: 400 }, (_, i) => `const line${i + 1} = ${i + 1};`).join('\n');
+      return callback({ ok: true, content: text, totalSize: text.length, bytesRead: text.length, truncated: false, binary: false, contentHash: mockHashOf(text) });
+    }
+    if (encoding !== 'base64' && String(relPath || '') === 'paged.log') {
+      const text = Array.from({ length: 4000 }, (_, i) => `log line ${i + 1}`).join('\n');
+      const page = text.slice(offset, offset + 2048);
+      return callback({ ok: true, content: page, totalSize: text.length, bytesRead: page.length, truncated: offset + page.length < text.length, binary: false });
+    }
+    // 每行 16 字节：第 128 行的换行是第一页的最后一个字节，第 129 行整行都在第二页
+    if (encoding !== 'base64' && String(relPath || '') === 'page-edge.log') {
+      const text = Array.from({ length: 200 }, (_, i) => `edge line ${String(i + 1).padStart(5, '0')}`).join('\n');
+      const page = text.slice(offset, offset + 2048);
+      return callback({ ok: true, content: page, totalSize: text.length, bytesRead: page.length, truncated: offset + page.length < text.length, binary: false });
+    }
+    if (encoding !== 'base64' && MOCK_BINARY_FILES.has(String(relPath || ''))) {
+      return callback({ ok: true, content: '', totalSize: MOCK_BINARY_FILES.get(relPath).bytes.length, bytesRead: 0, truncated: false, binary: true });
     }
     // 附件不再走本通道（2026-09-06 搬家后归 attachment:read），这里不再有 .ccm-uploads 分支。
     console.log(`[mock] browse:read relPath=${relPath} offset=${offset} encoding=${encoding} 未命中 fixture`);
@@ -5476,6 +5533,35 @@ io.on('connection', socket => {
       },
     },
     {
+      command: 'test:taskoutput-running',
+      run: async ({ activeInst }) => {
+        // 运行中的后台命令 + 一个子代理：后台命令不发 task_progress 心跳，这里只推一次全量快照（background_tasks_changed 的形态）。
+        // 窗口 15s：要看够两拍轮询（一拍 3s），还要切后台、回前台各断言一次。
+        console.log('[mock] test:taskoutput-running — 推送运行中的后台命令');
+        const targetInstanceId = activeInst.instanceId;
+        activeInst.state = 'busy';
+        const tasks = [
+          { taskId: 'bg_shell_1', taskType: 'local_bash', message: 'npm run build' },
+          { taskId: 'bg_agent_1', taskType: 'local_agent', message: 'Explore：搜索用例' },
+        ];
+        io.emit('agent:event', {
+          seq: 50, epoch: activeEpoch, sessionId: 'mock-session-visual-test', instanceId: targetInstanceId, ts: Date.now(),
+          type: 'task_progress', transient: true,
+          payload: { taskId: tasks[0].taskId, taskType: tasks[0].taskType, message: tasks[0].message, tasks }
+        });
+        await delay(15_000);
+        activeInst.state = 'idle';
+        io.emit('agent:event', {
+          seq: 51, epoch: activeEpoch, sessionId: 'mock-session-visual-test', instanceId: targetInstanceId, ts: Date.now(),
+          type: 'task_notification', payload: { source: 'system', status: 'completed', summary: '全部后台任务完成', tasks: [] }
+        });
+        socket.emit('agent:event', {
+          seq: 100, epoch: activeEpoch, sessionId: 'mock-session-visual-test', instanceId: targetInstanceId, ts: Date.now(),
+          type: 'result', payload: { messageId: 'msg_taskoutput', durationMs: 2000, costUsd: 0.001, isError: false, models: [activeModel] }
+        });
+      },
+    },
+    {
       command: 'test:exitplan',
       run: async ({ activeInst }) => {
         // Regression TC-15: approving ExitPlanMode should fall permission mode back to default.
@@ -5488,7 +5574,7 @@ io.on('connection', socket => {
         });
         pendingPermission = {
           requestId: 'req_exit_plan', toolUseId: 't_exit_plan', messageId: 'msg_exitplan_1',
-          name: 'ExitPlanMode', input: '## 计划\n1. 实现 X\n2. 测试 Y', cwd: activeInst.cwd,
+          name: 'ExitPlanMode', input: '## 计划\n1. 实现 X\n2. 测试 Y\n\n改动在 [demo.js](demo.js:2)', cwd: activeInst.cwd,
           setMode: 'default'
         };
         io.emit('agent:event', {
@@ -7208,6 +7294,15 @@ io.on('connection', socket => {
     if (taskId === 'bg_task_1') {
       return ack({ ok: true, text: 'MOCK_TASK_OUTPUT_LINE\n=== e2e finished ok ===', truncated: false, size: 42 });
     }
+    // 运行中的后台命令：每次多一行，用例据此数轮询。超出 40 行才够把列表撑到要滚动，<b> 是命令打印的字面量。
+    if (taskId === 'bg_shell_1') {
+      taskOutputPolls += 1;
+      const filler = Array.from({ length: 40 }, (_, i) => `build step ${i + 1}`).join('\n');
+      return ack({ ok: true, text: `${filler}\n<b>not html</b>\nPOLL_${taskOutputPolls}_END`, truncated: true, size: 20_000 });
+    }
+    if (taskId === 'bg_agent_1') {
+      return ack({ ok: false, error: '子代理、工作流这类任务运行中看不了输出，只有后台命令和 Monitor 可以' });
+    }
     ack({ ok: false, error: '输出不可用（mock 未记录该任务）' });
   });
 
@@ -7684,7 +7779,7 @@ io.on('connection', socket => {
           seq: 6, epoch: activeEpoch, sessionId: 'mock-session-visual-test', instanceId: targetId, ts: Date.now(),
           // interrupted 与真 server 对齐（agent.js:2906）：前端 presentTurnResult 用它【压过】isError 分流，
           // 漏发会把「你按了停止」渲染成红色「出错：」条 + 推送标题「⚠️ 任务出错」。
-          type: 'result', payload: { messageId: q.messageId, durationMs: 200, costUsd: 0, isError: false, interrupted: true, models: [activeModel] }
+          type: 'result', payload: { messageId: q.messageId, durationMs: 200, costUsd: 0, isError: false, interrupted: true, interruptedBy: 'user', models: [activeModel] }
         });
       }
       pendingQuestion = null;
@@ -7705,7 +7800,7 @@ io.on('connection', socket => {
 
     socket.emit('agent:event', {
       seq: 0, epoch: 'server', sessionId: null, instanceId: targetId, ts: Date.now(),
-      type: 'system', payload: { message: '已中断', kind: 'interrupted' }
+      type: 'system', payload: { message: '已中断', kind: 'interrupted', interruptedBy: 'user' }
     });
   });
 

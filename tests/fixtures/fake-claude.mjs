@@ -62,6 +62,10 @@
 //   CCM_FAKE_CLAUDE_EXIT_TITLE=<标题> → 收尾时先追加一条 custom-title。模拟真 CLI 把内存里的会话标题
 //   当元数据再写一遍（CLI 2.1.312 源码：追加会话元数据时写 currentSessionTitle），网页刚改的名字就被盖回去（#458）。
 //
+// 【退出时报写丢】与模式正交，默认关：
+//   CCM_FAKE_CLAUDE_EXIT_WRITES_LOST=<错误码，如 ENOSPC> → 读到 stdin EOF 后先吐一条 system/session_writes_lost
+//   再退。形状照真 CLI 2.1.318 在写满的卷上实测的帧；真 CLI 同样是 EOF 后、进程退出前发这一条。
+//
 // 【它仍然不是真 CLI】不跑模型、不认工具、不落 transcript（上面那一行收尾写入除外）。
 // 任何需要真回合语义的断言仍归 S5。
 
@@ -100,6 +104,9 @@ const LISTED_MODEL = process.env.CCM_FAKE_CLAUDE_MODEL_LIST_FILE
 const MCP_STATUS = process.env.CCM_FAKE_CLAUDE_MCP_STATUS ? JSON.parse(process.env.CCM_FAKE_CLAUDE_MCP_STATUS) : null;
 const MCP_RECONNECT_ERROR = process.env.CCM_FAKE_CLAUDE_MCP_RECONNECT_ERROR || '';
 const CONTROL_LOG = process.env.CCM_FAKE_CLAUDE_CONTROL_LOG || '';
+// 后台任务输出：getTaskOutput() 发 get_task_output 控制请求。显式 opt-in（CCM_FAKE_CLAUDE_TASK_OUTPUT=<{task_id: 回包} 的 JSON>）
+// 才这样应答，回包形状和表外 id 的报错原文照 CLI 2.1.318 零 token 实测。不置位时照旧回 success + {}。
+const TASK_OUTPUT = process.env.CCM_FAKE_CLAUDE_TASK_OUTPUT ? JSON.parse(process.env.CCM_FAKE_CLAUDE_TASK_OUTPUT) : null;
 // 斜杠命令清单（#456）。SDK 的 supportedCommands() 同样读 initialize 响应（commands 字段），真 CLI 的 system/init
 // 只带名字（slash_commands: string[]）。显式 opt-in（CCM_FAKE_CLAUDE_COMMANDS=<SlashCommand[] 的 JSON>）才两处都带；
 // 不置位时 initialize 响应与 init 逐字不变。
@@ -109,6 +116,7 @@ const EXIT_APPEND = process.env.CCM_FAKE_CLAUDE_EXIT_APPEND || '';
 const SCREENSHOT_TOOL_USE_ID = 'toolu_fake_screenshot';
 const SCREENSHOT_PNG = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMB/6X2Xb0AAAAASUVORK5CYII=';
 const EXIT_MARKER = process.env.CCM_FAKE_CLAUDE_EXIT_MARKER || '';
+const EXIT_WRITES_LOST = process.env.CCM_FAKE_CLAUDE_EXIT_WRITES_LOST || '';
 const EXIT_TITLE = process.env.CCM_FAKE_CLAUDE_EXIT_TITLE || '';
 const RESULT_DELAY_MS = Number(process.env.CCM_FAKE_CLAUDE_RESULT_DELAY_MS) || 0;
 const BG_DISABLED = process.env.CCM_FAKE_CLAUDE_BG_DISABLED === '1';
@@ -164,6 +172,16 @@ rl.on('line', (line) => {
     if (CONTROL_LOG) appendFileSync(CONTROL_LOG, `${JSON.stringify(msg.request)}\n`);
     if (MCP_RECONNECT_ERROR && msg.request?.subtype === 'mcp_reconnect') {
       out({ type: 'control_response', response: { subtype: 'error', request_id: msg.request_id, error: MCP_RECONNECT_ERROR } });
+      return;
+    }
+    if (TASK_OUTPUT && msg.request?.subtype === 'get_task_output') {
+      const answer = TASK_OUTPUT[msg.request.task_id];
+      out({
+        type: 'control_response',
+        response: answer
+          ? { subtype: 'success', request_id: msg.request_id, response: answer }
+          : { subtype: 'error', request_id: msg.request_id, error: 'get_task_output: no shell or Monitor task with that task_id in this session' },
+      });
       return;
     }
     if (MCP_STATUS && msg.request?.subtype === 'mcp_status') {
@@ -333,6 +351,12 @@ function finishTurn(msg, reply = REPLY) {
 // 读到 EOF 才退。提前退出会让 SDK 那次 write 抛 EPIPE，而它在 sdk.mjs 内部不被 catch，
 // 直接冒成 uncaughtException 打死整个测试进程（原 .sh 的头注记录过这次事故）。
 rl.on('close', () => {
+  if (EXIT_WRITES_LOST) {
+    out({
+      type: 'system', subtype: 'session_writes_lost', error_code: EXIT_WRITES_LOST, lost: ['transcript'],
+      transcript_session_ids: [SESSION_ID], uuid: randomUUID(), session_id: SESSION_ID,
+    });
+  }
   if (!EXIT_APPEND) process.exit(0);
   setTimeout(() => {
     if (EXIT_TITLE) appendFileSync(EXIT_APPEND, `${JSON.stringify({ type: 'custom-title', customTitle: EXIT_TITLE, sessionId: SESSION_ID })}\n`);

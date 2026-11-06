@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // tests/gates/check-diagram-claims.js —— 架构图集的漂移闸
 //
-// 【它守什么】gh-pages 上那 13 张架构图（https://ike-li.github.io/claude-chat-mobile/diagrams/）
+// 【它守什么】gh-pages 上那 13 张架构图（https://ccm.osolee.cc.cd/diagrams/）
 // 里承重的事实：常量取值、被引用的源码路径、以及图声称的基线提交。代码改了而图没改，这里变红。
 //
 // 【为什么需要】图本身没有任何机械保证：archify 的 source 证据只验「该文件在 pin 的 commit 存在」，
@@ -139,8 +139,8 @@ const CLAIMS = [
     actual: () => /SDK_TAIL_ENTRYPOINTS = new Set\(\['sdk-ts'\]\)/.test(read('app/src/sessions/history.js')) ? "只认 sdk-ts" : '白名单已改', expect: '只认 sdk-ts' },
   { diagram: '06', shown: '前台判据是 client:presence（hidden !== true）',
     actual: () => /s\?\.data\?\.hidden !== true/.test(read('app/src/ops/notifications.js')) ? 'hidden !== true' : '判据已改', expect: 'hidden !== true' },
-  { diagram: '00', shown: 'claude-agent-sdk 0.3.310',
-    actual: () => JSON.parse(read('package.json')).dependencies['@anthropic-ai/claude-agent-sdk'], expect: '0.3.310' },
+  { diagram: '00', shown: 'claude-agent-sdk 0.3.316',
+    actual: () => JSON.parse(read('package.json')).dependencies['@anthropic-ai/claude-agent-sdk'], expect: '0.3.316' },
   { diagram: '00 / 01 / 08 / 11', shown: '共 33 种 type',
     // 同上：27 → 31（trusted_devices、session_recap、prompt_suggestion、rewind_applied）；
     // 31 → 32（foreground_tasks，#459），gh-pages 四张图与图集首页只换显示文字。
