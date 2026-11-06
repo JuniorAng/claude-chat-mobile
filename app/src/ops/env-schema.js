@@ -228,6 +228,51 @@ export const ENV_SCHEMA = {
     label: t('删除会话前静默期', 'Session delete quiet period'),
   },
 
+  // ── 新会话默认档（web 侧）──────────────────────────────────────────
+  //
+  // 为什么需要它：新会话的档来自 CLI settings（L3），而终端里的全局默认常是 opus / 无 effort /
+  // Manual。手机上每次开新会话都要手改一遍，本组把「我每次都要 sonnet + medium + Auto」固化下来。
+  // 只作用于 web 侧 FRESH 会话：终端 claude 起新会话仍走 CLI settings，resume 仍用会话自己的历史档。
+  // 优先级：本组 > CLI settings > 产品硬默认；用户在空首页手点的档（pending）仍压过本组。
+  // 改完要重启（同其余非 hot 项），因为 app.js 在模块求值时读取。
+  CCM_DEFAULT_MODEL: {
+    group: 'defaults', kind: 'text',
+    label: t('新会话默认模型', 'Default model for new sessions'),
+    help: t('模型别名或 ID（如 sonnet、opus、claude-sonnet-5）。留空跟随 CLI settings；网关自定义模型名也可直接填。',
+      'Model alias or ID (e.g. sonnet, opus, claude-sonnet-5). Empty follows CLI settings; gateway-specific model names are accepted too.'),
+  },
+  CCM_DEFAULT_EFFORT: {
+    group: 'defaults', kind: 'enum',
+    options: [
+      { value: '', label: t('跟随 CLI settings', 'Follow CLI settings') },
+      { value: 'low', label: t('Low', 'Low') },
+      { value: 'medium', label: t('Medium', 'Medium') },
+      { value: 'high', label: t('High', 'High') },
+      { value: 'xhigh', label: t('Xhigh', 'Xhigh') },
+      { value: 'max', label: t('Max', 'Max') },
+      { value: 'ultracode', label: t('Ultracode', 'Ultracode') },
+      { value: 'auto', label: t('Auto（模型内置默认）', 'Auto (model default)') },
+    ],
+    label: t('新会话默认思考强度', 'Default effort for new sessions'),
+    help: t('只影响新开的会话；已有会话继续用它自己存的档。选「跟随 CLI settings」则读取 ~/.claude/settings.json 的 effortLevel。',
+      'Applies to new sessions only; existing sessions keep their own level. "Follow CLI settings" reads effortLevel from ~/.claude/settings.json.'),
+  },
+  CCM_DEFAULT_PERMISSION_MODE: {
+    group: 'defaults', kind: 'enum',
+    options: [
+      { value: '', label: t('跟随 CLI settings', 'Follow CLI settings') },
+      { value: 'default', label: t('Manual（危险操作前先问）', 'Manual (ask before risky actions)') },
+      { value: 'plan', label: t('Plan（只规划，不执行工具）', 'Plan (plan only)') },
+      { value: 'acceptEdits', label: t('Accept edits（文件编辑自动通过）', 'Accept edits') },
+      { value: 'dontAsk', label: t("Don't ask（未放行的一律拒绝）", "Don't ask") },
+      { value: 'auto', label: t('Auto（分类器决定放行或拒绝）', 'Auto (classifier decides)') },
+      { value: 'bypassPermissions', label: t('Bypass permissions（全部放行，危险）', 'Bypass permissions (dangerous)') },
+    ],
+    label: t('新会话默认权限档', 'Default permission mode for new sessions'),
+    help: t('只影响新开的会话；已有会话继续用它自己存的档。Auto 在 CLI settings 禁用了 auto 模式时会回落 Manual。',
+      'Applies to new sessions only; existing sessions keep their own mode. Auto falls back to Manual when the CLI settings disable auto mode.'),
+  },
+
   // ── 推送 ────────────────────────────────────────────────────────────
   VAPID_PUBLIC_KEY: {
     group: 'push', kind: 'text',
@@ -371,6 +416,7 @@ export const ENV_GROUPS = [
   { id: 'auth', label: t('鉴权', 'Authentication') },
   { id: 'runtime', label: t('运行时', 'Runtime') },
   { id: 'limits', label: t('超时与配额', 'Timeouts & quotas') },
+  { id: 'defaults', label: t('新会话默认档', 'New-session defaults') },
   { id: 'push', label: t('推送', 'Notifications') },
   { id: 'toggles', label: t('功能开关', 'Feature toggles') },
   { id: 'logs', label: t('日志', 'Logging') },

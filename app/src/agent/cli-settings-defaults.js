@@ -301,20 +301,27 @@ export function buildWorktreeGatewayEnv(worktreeEnv, canonicalEnv) {
 
 /**
  * FRESH 会话最终采用的 mode/effort（+ 可选 model）。
- * L0 pending（has* 为真时，含 pendingEffort=null 合法）优先于 L3 cliDefaults，再回落 L4。
+ * L0 pending（has* 为真时，含 pendingEffort=null 合法）> L3.5 CCM 配置默认（userDefaults）
+ * > L3 cliDefaults，再回落 L4。
+ *
+ * userDefaults 是 ccm.config.json 里用户为本产品显式配置的「新会话默认档」。它排在 CLI settings 之前：
+ * 用户在这里写下的就是「每次新开会话都用这个」的意图，让新会话不再被 CLI 的全局默认（常见是 opus /
+ * 无 effort / manual）覆盖。终端里 claude 起新会话仍是 CLI settings（本表只作用于 web 侧新会话）。
  *
  * @param {object} opts
  * @param {boolean} [opts.hasPendingMode]
  * @param {string|null|undefined} [opts.pendingMode]
  * @param {boolean} [opts.hasPendingEffort]
  * @param {string|null|undefined} [opts.pendingEffort]
- * @param {{ mode?: string, effort?: string|null, model?: string }} [opts.cliDefaults] L3 缓存
+ * @param {{ mode?: string|null, effort?: string|null }} [opts.userDefaults] L3.5 CCM 配置默认
+ * @param {{ mode?: string, effort?: string|null, model?: string, autoModeDisabled?: boolean }} [opts.cliDefaults] L3 缓存
  */
 export function resolveFreshPrefs({
   hasPendingMode = false,
   pendingMode,
   hasPendingEffort = false,
   pendingEffort,
+  userDefaults = null,
   cliDefaults = null,
 } = {}) {
   const baseMode = normalizePermissionMode(cliDefaults?.mode) ?? 'default';
@@ -326,9 +333,19 @@ export function resolveFreshPrefs({
     ? cliDefaults.model
     : undefined;
 
-  const mode = hasPendingMode
+  // 配置默认档是 UI 档（可含 ultracode / auto）；空串 = 没配置，继续走 L3。
+  const cfgMode = normalizePermissionMode(userDefaults?.mode);
+  const cfgEffortRaw = typeof userDefaults?.effort === 'string' && userDefaults.effort
+    ? userDefaults.effort
+    : null;
+  const cfgEffort = cfgEffortRaw ? normalizeEffortUiLevel(cfgEffortRaw) : null;
+
+  let mode = hasPendingMode
     ? (normalizePermissionMode(pendingMode) ?? 'default')
-    : baseMode;
+    : (cfgMode ?? baseMode);
+  // settings 明确禁用了 auto 模式时，配置里的 auto 也落回 CLI/settings 的档（与 defaultsFromResolvedSettings
+  // 对 auto 的处理同向）：否则界面预显 Auto，实际 CLI 从 default 起。
+  if (mode === 'auto' && cliDefaults?.autoModeDisabled === true) mode = baseMode;
 
   // pending 是 UI 档（可含 ultracode）；L3 base 仍是 SDK 五档（settings 不认 ultracode）。
   // 旧逻辑 normalizeEffortLevel(pendingEffort) 把 ultracode 剥成 null → FRESH 首条无 Settings.ultracode（H1）。
@@ -344,14 +361,18 @@ export function resolveFreshPrefs({
       effort = null;
       ultracode = false;
     }
+  } else if (cfgEffort) {
+    effort = cfgEffort.ui === 'auto' ? 'auto' : cfgEffort.sdk;
+    ultracode = cfgEffort.ultracode;
   }
   // 来源只管显示：L3 的档照样当显式档下发，但用户没选过它，界面按「没指定」显示（docs/display-contracts.md §2.3）。
+  // 配置默认档和 pending 一样按用户意图显示（source='user'，磁贴高亮），不再标「CLI 默认」。
   // 「照样下发」以 L3 读到为前提：spawn 前只等 ensureCliDefaults 一个预算（app.js CLI_DEFAULTS_RESUME_BUDGET_MS），
   // 超时或读失败时 cliDefaults 为空、effort 为 null，不传 --effort，由 CLI 自己读 settings（验收 O117）。
   // 普通目录下 CLI 读到的与 resolveSettings 是同一份，实际档不变、只是命令行里看不到 --effort；linked worktree
   // 不然——CLI 把 local 源解析到主 checkout（见 defaultsFromEffectiveSettings 头注），worktree 自己的
   // settings.local.json 里的 effortLevel 这时不生效，落到的是主 checkout / user 层的档。
-  const effortSource = !effort ? 'default' : (hasPendingEffort ? 'user' : 'cli-settings');
+  const effortSource = !effort ? 'default' : (hasPendingEffort || cfgEffort ? 'user' : 'cli-settings');
 
   return { mode, effort, effortSource, ultracode, model: baseModel };
 }

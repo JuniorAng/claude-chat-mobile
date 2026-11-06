@@ -217,8 +217,22 @@ const {
   trustedProxy: TRUSTED_PROXY,       // 采信 XFF 的开关，已归一（只可能是 '' 或 'loopback'）
   deviceApprovalScope: DEVICE_APPROVAL_SCOPE, // 设备审批管辖面，已归一（只可能是 '' 或 'all'）
   accessProfile: ACCESS_PROFILE,     // 声明的公网方案，已归一（未知值 = ''）
+  defaultModel: CCM_DEFAULT_MODEL,
+  defaultEffort: CCM_DEFAULT_EFFORT,
+  defaultPermissionMode: CCM_DEFAULT_PERMISSION_MODE,
   dataDir: DATA_DIR,
 } = parseServerConfig(process.env, { home: homedir(), projectRoot: HERE });
+// 新会话默认档（L3.5）：用户在配置面板里显式指定的「每次新开会话都用这个」。空串/非法值 = 没配置，
+// 继续走 L3 CLI settings。权限/effort 的合法性在这里归一，schema 的 enum 是写入侧第一道，手改配置
+// 绕过写入侧时由这里兜底（非法 → null → 不覆盖 CLI settings）。
+const USER_DEFAULT_MODEL = CCM_DEFAULT_MODEL || null;
+const USER_DEFAULT_EFFORT = CCM_DEFAULT_EFFORT && normalizeEffortUiLevel(CCM_DEFAULT_EFFORT)
+  ? CCM_DEFAULT_EFFORT
+  : null;
+const USER_DEFAULTS = Object.freeze({
+  mode: normalizePermissionMode(CCM_DEFAULT_PERMISSION_MODE),
+  effort: USER_DEFAULT_EFFORT,
+});
 // 实际监听的端口。只有 CCM_TEST_EPHEMERAL_PORT 那条测试路径会在绑定后改写它，见「监听」一节。
 let port = configuredPort;
 // 写错的 DEVICE_APPROVAL_SCOPE（'ALL' / 'yes'）按默认档运行、零报错，而默认档恰是较松的那一档。语义不改
@@ -1515,7 +1529,11 @@ function instancesPayload() {
   // 新会话页选中的是 worktree 时，首条消息开在 composeCwd 而不是 viewingCwd（那是它所属的仓库）——
   // 默认档位与默认模型要按首条消息真正开在哪取，暂存档位的键才收回项目轴（2026-10-10 review P2）。
   const defaultsCwd = composeCwdNow() ?? viewingCwdOf();
-  payload.defaultModel = defaultModelByCwd.get(defaultsCwd) ?? null;
+  // 配置了 web 侧默认模型时优先显示它——但只在空首页/新会话页（viewingInstanceId 为空）：
+  // 那正是它会被 pin 进新实例的唯一场景。看着一个已续接的会话时，它不会改用这个模型，
+  // 拿它当「默认模型」显示等于对用户说一条不会发生的事；那种情况仍回落实测的 cwd 默认。
+  payload.defaultModel = (viewingInstanceId ? null : USER_DEFAULT_MODEL)
+    || defaultModelByCwd.get(defaultsCwd) || null;
   // 本区 settings 禁用了 auto 模式（#461）：权限档面板的 Auto 置灰。与 defaultModel 一样无条件下发——
   // 看着活会话时也要灰（禁用之前就开着的会话照常显示 Auto，但切走之后不能再切回来）。没读到 settings 时为 false。
   payload.autoModeDisabled = cliDefaultsByCwd.get(defaultsCwd)?.autoModeDisabled === true;
@@ -1529,6 +1547,7 @@ function instancesPayload() {
       pendingMode: pendingModeByCwd.get(prefsKey),
       hasPendingEffort: pendingEffortByCwd.has(prefsKey),
       pendingEffort: pendingEffortByCwd.get(prefsKey),
+      userDefaults: USER_DEFAULTS,
       cliDefaults: cliDefaultsByCwd.get(cwd) || null,
     });
     payload.defaultPermissionMode = fresh.mode;
@@ -2208,6 +2227,7 @@ function openInstance({ cwd, resumeId = null, mode, effort, effortSource, author
         pendingMode: pendingModeByCwd.get(routeKey),
         hasPendingEffort: pendingEffortByCwd.has(routeKey),
         pendingEffort: pendingEffortByCwd.get(routeKey),
+        userDefaults: USER_DEFAULTS,
         cliDefaults: cliDefaultsByCwd.get(cwd) || null,
       })
     : null;
@@ -2246,11 +2266,13 @@ function openInstance({ cwd, resumeId = null, mode, effort, effortSource, author
   permModeByInstance.set(id, mode);
   effortByInstance.set(id, effNorm.ui); // 广播/UI 用（可含 ultracode）
   effortSourceByInstance.set(id, !effNorm.ui ? 'default' : (effSource ?? 'user'));
-  // 模型：resume 用会话指针；FRESH 不 pin——让 CLI 按原生优先级自行解析
+  // 模型：resume 用会话指针；FRESH 默认不 pin——让 CLI 按原生优先级自行解析
   // （/model > --model > ANTHROPIC_MODEL > settings.model），不再用 effective.model 覆盖。
+  // 例外：用户在本产品配置了「新会话默认模型」时按它 pin（CCM_DEFAULT_MODEL）。这是他显式写的意图，
+  // 与终端空会话的 CLI 全局默认无关；不 pin 的话 setModel 基准为空、首条消息会落到 CLI 默认（常是 opus）。
   // resolvedEnv 可含 ANTHROPIC_MODEL（worktree 的 settings.local.json env 块），
   // CLI 会自动采纳（优先级在 --model 之下、settings.model 之上），与 startModel=undefined 不冲突。
-  const startModel = saved?.model || undefined;
+  const startModel = saved?.model || (isFresh ? USER_DEFAULT_MODEL || undefined : undefined);
   // 本实例创建时所属的连接根（worktree 会话取其仓库所在的根）。只用于 onCwdChanged 的热移除保护——
   // 该根之后被移出 WORKDIRS 时，已发出去的授权不在会话半途收回（作为 extraRoots 传给 authorize）。
   const authorizedRoot = retainedRoot ?? authorize(cwd)?.root ?? workspaceCwdOf(cwd);
