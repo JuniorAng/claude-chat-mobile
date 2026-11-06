@@ -52,6 +52,55 @@ const LIST_LIMIT = MAX_SESSION_LIMIT;
 // 64KB 足够覆盖「末条消息 + 其后一串元数据」。比 TAIL_READ_BYTES(512KB) 更轻，因列表要对目录内每个会话读一次。
 const LIST_ACTIVITY_TAIL_BYTES = 64 * 1024;
 
+// ── 「自动会话」识别（2026-11-06）────────────────────────────────────────
+// 抽屉里除了人手发的会话，还有插件 / 子 agent 通过 SDK 自动提交的会话（本机实测是 security-guidance
+// 插件在每次提交后跑的评审）。它们和主会话同列在项目下，用户分不清该续哪一条。
+//
+// 判据是首条主链 user 消息的 turnOrigin：
+//   · 'human' —— 人发起的（web 输入、CLI 输入）
+//   · 'sdk'   —— 程序提交的（插件 / 子 agent / 自动化脚本）
+//   · 缺省      —— 老 transcript 没有这个字段，按「人」处理（失败方向：不隐藏真实会话）。
+// 注意：web 会话的 promptSource 也是 'sdk'，但 turnOrigin 是 'human'——不能拿 promptSource 判。
+// sidechain（子 agent 跑在同一进程里）本来就不落成独立会话，这里只处理独立进程的自动会话。
+const AUTOMATED_PROBE_MAX_BYTES = 4 * 1024 * 1024;
+const isMainUserEntry = e => e?.type === 'user' && e.message?.role === 'user'
+  && !e.isMeta && !e.isSidechain && !e.parent_tool_use_id && !e.parentToolUseId;
+const isAutomatedUserEntry = e => isMainUserEntry(e) && e.turnOrigin === 'sdk';
+
+// 首条主链 user 行可能超大：插件把整份 diff 塞进 prompt，单行可到几百 KB，64KB 头窗里 parse 不出来。
+// 顺序读到 4MB（只读一遍，按 64KB 块推进），只为回答「首条 user 是不是 sdk 提交的」。用 Buffer 拼行，
+// 避免 UTF-8 多字节字符被块边界劈开后 JSON 解析失败。读不出来/超上限 → false（按人处理）。
+async function probeFirstUserAutomated(fh, size) {
+  const cap = Math.min(size, AUTOMATED_PROBE_MAX_BYTES);
+  let offset = 0;
+  let carry = Buffer.alloc(0);
+  const inspect = (lineBuf) => {
+    if (!lineBuf.length) return null;
+    let entry;
+    try { entry = JSON.parse(lineBuf.toString('utf-8')); } catch { return null; }
+    return isMainUserEntry(entry) ? isAutomatedUserEntry(entry) : null;
+  };
+  while (offset < cap) {
+    const len = Math.min(HEAD_READ_BYTES, cap - offset);
+    const buf = Buffer.allocUnsafe(len);
+    const { bytesRead } = await fh.read(buf, 0, len, offset);
+    if (!bytesRead) break;
+    offset += bytesRead;
+    const combined = carry.length ? Buffer.concat([carry, buf.subarray(0, bytesRead)]) : buf.subarray(0, bytesRead);
+    let start = 0;
+    let nl;
+    while ((nl = combined.indexOf(0x0A, start)) !== -1) { // 0x0A = '\n'
+      const verdict = inspect(combined.subarray(start, nl));
+      if (verdict !== null) return verdict;
+      start = nl + 1;
+    }
+    carry = combined.subarray(start);
+    if (bytesRead < len) break; // EOF
+  }
+  // 文件末尾没有换行：最后一行同样是完整行。
+  return inspect(carry) ?? false;
+}
+
 // B2：listSessions 结果按 dir 缓存，按目录内容指纹失效（见 listFingerprint）。重复打开列表不重扫盘。
 const _listCache = new Map(); // cacheKey → { fingerprint, result, expiresAt }
 // SDK 抛错时回落的降级结果（缺 SDK 标题：自造扫盘不读旁路标题，搜索也少了 summary 这个匹配键）不能只按指纹存——
@@ -1531,11 +1580,17 @@ async function scanSessionsViaSdk(cwd, limit) {
     try { activityAt = await readLastMessageActivityMs(file, st.size); } catch { /* 读失败 → 回落 lastModified */ }
     // SDK 提不出 summary 时回落 readHeadMeta，与搜索、通知横幅同口径——否则搜得到原文、抽屉却是占位（验收 O58）。
     // 只对空 summary 的那几条才开文件，正常会话不多付一次读。readHeadMeta 读失败返回 {}，落到占位。
-    const title = s.summary || (await readHeadMeta(file, st.size)).title || '(无标题)';
+    const fallbackMeta = s.summary ? null : await readHeadMeta(file, st.size);
+    const title = s.summary || fallbackMeta?.title || '(无标题)';
     return {
       id: s.sessionId,
       title,
       lastUsedAt: Math.round(activityAt ?? s.lastModified),
+      // 内部字段：automated 判定只为最终页内的行做，不能让「读 51 个候选的所有头窗」成为列表成本。
+      _file: file,
+      _size: st.size,
+      _mtimeMs: st.mtimeMs,
+      _automated: fallbackMeta ? fallbackMeta.automated === true : undefined,
     };
   }))).filter(Boolean);
 
@@ -1574,17 +1629,31 @@ async function scanSessionsViaSdk(cwd, limit) {
       // 标题回落 readHeadMeta（与快路径空 summary 同口径）。本地 slash 命令跑完的会话主链无消息，提不出就是占位；
       // 首条以 HTML 标签开头的会话 SDK 同样提不出 summary、整条漏报，但首条 user 文本在（验收 O58）。
       const meta = await readHeadMeta(file, m.size);
-      return { id: m.name.slice(0, -6), title: meta.title || '(无标题)', lastUsedAt: Math.round(activityAt ?? m.mtimeMs) };
+      return {
+        id: m.name.slice(0, -6),
+        title: meta.title || '(无标题)',
+        lastUsedAt: Math.round(activityAt ?? m.mtimeMs),
+        automated: meta.automated === true,
+      };
     }));
     enriched.push(...extra);
   } catch { /* readdir 失败（目录刚被删等）：SDK 结果照常返回，不因补齐失败而整个列表塌掉 */ }
 
   enriched.sort((a, b) => b.lastUsedAt - a.lastUsedAt || String(a.id).localeCompare(String(b.id)));
+  // automated 只为最终页内的 SDK 行补读头窗（见上面 _file/_size 注释）；缺省补读的形态只有 SDK 行，
+  // 补齐路径的行已带值。读完删掉内部字段，行形状与 scanViaReaddir 对齐。
+  const page = enriched.slice(0, limit);
+  await Promise.all(page.map(async s => {
+    if (s.automated === undefined) {
+      s.automated = s._automated ?? await cachedSessionAutomated(s._file, s._size, s._mtimeMs).catch(() => false);
+    }
+    delete s._file; delete s._size; delete s._mtimeMs; delete s._automated;
+  }));
   // hasMore：盘上总数已准确时只用 total>limit。OR SDK 触顶只可能多报——祖先幽灵被滤掉后
   // 会让「还有更早的会话」假阳性。readdir 失败才回落触顶猜测。
   const total = Math.max(dirTotal, enriched.length);
   return {
-    sessions: enriched.slice(0, limit),
+    sessions: page,
     hasMore: countedFromDisk ? total > limit : (total > limit || arr.length >= fetchLimit),
     total,
   };
@@ -1685,6 +1754,7 @@ async function scanViaReaddir(dir, limit, query = '', titleById = new Map(), exc
       title,
       model: meta.model || null,
       entrypoint: meta.entrypoint || null,
+      automated: meta.automated === true,
       lastUsedAt: Math.round(s.activityAt),
       _keys: query
         ? sessionTitleSearchKeys({
@@ -1778,6 +1848,7 @@ export async function listSessionsByIds(cwd, ids, { baseDir = CLAUDE_DIR, member
       title: peeked || (meta && meta.title) || '(无标题)',
       model: (meta && meta.model) || null,
       entrypoint: (meta && meta.entrypoint) || null,
+      automated: meta?.automated === true,
       lastUsedAt: Math.round(activityAt ?? st.mtimeMs),
       // 与 listSessionsPage 的行同形：项目根的行不带 cwd，成员目录的行带——前端点开时要用真实 cwd
       ...(owner.member ? memberRowFields(owner.member) : {}),
@@ -1815,12 +1886,27 @@ async function cachedHeadMeta(file, size, mtimeMs) {
   return meta;
 }
 
-async function readHeadMeta(file, size) {
-  const meta = { title: '', model: null, entrypoint: null };
+// SDK 快路径的轻量版：只为一行布尔值读头窗（light=true 不读尾窗），按 (size,mtime) 缓存。
+// 未命中时读失败（{}）不缓存，下次还能重试；缓存满了只更新已有条目（同 cachedHeadMeta 的理由）。
+const _automatedCache = new Map(); // file → { size, mtimeMs, automated }
+async function cachedSessionAutomated(file, size, mtimeMs) {
+  const hit = _automatedCache.get(file);
+  if (hit && hit.size === size && hit.mtimeMs === mtimeMs) return hit.automated;
+  const meta = await readHeadMeta(file, size, { light: true });
+  const automated = meta.automated === true;
+  if ('title' in meta && (hit || _automatedCache.size < HEAD_META_CACHE_CAP)) {
+    _automatedCache.set(file, { size, mtimeMs, automated });
+  }
+  return automated;
+}
+
+async function readHeadMeta(file, size, { light = false } = {}) {
+  const meta = { title: '', model: null, entrypoint: null, automated: false };
   // 标题优先级与 SDK summary 同口径：用户起的名（/rename、renameSession 写的 custom-title）> CLI 生成的
   // ai-title（与 /resume 选择器同款）> 首条真实 user 文本 > 首条斜杠命令名。
   // 命令包裹（<command-name>/clear</command-name>…）是 CLI 注入的 meta、非用户原话，不直接当标题。
   let customTitle = '', aiTitle = '', firstUser = '', firstCmd = '';
+  let sawMainUser = false;
   try {
     const { fh, st } = await openRegularFile(file);
     try {
@@ -1829,7 +1915,8 @@ async function readHeadMeta(file, size) {
       // 两个 buffer 都被 fh.read 全量写入、只 toString 到 bytesRead——allocUnsafe 免去无谓零填充（尤其尾窗 512KB）。
       const buf = Buffer.allocUnsafe(headLen);
       const { bytesRead } = await fh.read(buf, 0, headLen, 0);
-      for (const line of buf.toString('utf-8', 0, bytesRead).split('\n')) {
+      const headText = buf.toString('utf-8', 0, bytesRead);
+      for (const line of headText.split('\n')) {
         if (!line.trim()) continue;
         let entry;
         try { entry = JSON.parse(line); } catch { continue; } // 截断尾行/非 JSON：跳过
@@ -1844,6 +1931,12 @@ async function readHeadMeta(file, size) {
         } else if (entry.type === 'ai-title' && typeof entry.aiTitle === 'string' && entry.aiTitle.trim()) {
           aiTitle = entry.aiTitle.trim(); // 取头窗内最后一次（CLI 会更新，后写更准）
         } else if (entry.type === 'user' && !entry.isMeta) {
+          // 只认【首条】主链 user 消息：自动会话的判据是「会话是怎么开始的」。取任意一条会把
+          // 后续 SDK 注入的轮次误当成程序发起的（人开的会话中途被插件塞一轮就会整条被归类）。
+          if (!sawMainUser && isMainUserEntry(entry)) {
+            sawMainUser = true;
+            if (isAutomatedUserEntry(entry)) meta.automated = true;
+          }
           const c = extractContent(entry.message?.content).trim();
           if (c.startsWith('<command-name>')) {
             if (!firstCmd) { const m = /<command-name>([^<]+)<\/command-name>/.exec(c); if (m) firstCmd = m[1].trim(); }
@@ -1854,6 +1947,15 @@ async function readHeadMeta(file, size) {
           }
         }
       }
+      // 首条主链 user 行超出头窗 → 头窗里根本没有可 parse 的 user 行。触发条件不能用
+      // `headText.includes('"type":"user"')`：真机上前几行常是超大的 queue-operation（插件把整份
+      // diff 塞在 enqueue.content 里），64KB 窗口里只有那条 queue-operation，user 行整条在窗外。
+      // 只看「头窗没找到主链 user 且文件比头窗大」，由 probe 自己按 64KB 块顺序读到 4MB。
+      // 没有 user 行的大文件（罕见：纯元数据的超长会话）会白读一次，但有 (size,mtime) 缓存兜底。
+      if (!sawMainUser && size > HEAD_READ_BYTES) {
+        meta.automated = await probeFirstUserAutomated(fh, size);
+      }
+      // light = 只要 automated 判定（SDK 快路径用）：跳过尾窗标题补读，避免为一行布尔值再读 512KB。
       // 文件比头窗大 → 补读尾窗：custom-title 后写者胜，头窗里有也可能被后来的改名盖过，所以总要读；
       // ai-title 只在头窗没抓到时才从尾窗取。窗口两档：头窗已有 ai-title 时只为找 custom-title，
       // 读末尾 HEAD_READ_BYTES（与 SDK 列会话读的尾窗同大；CLI 回写元数据就是为了让它留在这个窗里）；
@@ -1861,7 +1963,7 @@ async function readHeadMeta(file, size) {
       // title/model/entrypoint（否则一条好会话反被降级成「(无标题)」）。半行 parse 失败被跳过，
       // 完整的标题行仍可读到。⚠️ 头窗与尾窗之间存在死区：标题若只落在这中间（早期生成后再没更新、
       // 且其后堆了超过尾窗的内容）会两窗皆漏、回退下一档——实测现有会话未触发。
-      if (size > HEAD_READ_BYTES) {
+      if (!light && size > HEAD_READ_BYTES) {
         try {
           const headAiTitle = Boolean(aiTitle);
           const tailBytes = headAiTitle ? HEAD_READ_BYTES : TAIL_READ_BYTES;

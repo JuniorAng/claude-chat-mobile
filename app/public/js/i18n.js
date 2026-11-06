@@ -633,6 +633,8 @@ export const EN_DICT = Object.freeze({
   '需要你': 'Needs you',
   // —— 会话行未读（R65，2026-08-30 需求合稿）+ 长按标为未读/已读 ——
   '未读': 'Unread',
+  '自动会话': 'Automated sessions',
+  '由程序或子 agent 自动创建，不是你亲手发的会话': 'Created automatically by a program or subagent, not typed by you',
   '{n} 未读': '{n} unread',
   '未读数加载中': 'Loading unread count',
   '{n} 个文件夹未能加载': '{n} folders failed to load',

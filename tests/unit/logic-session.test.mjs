@@ -7,7 +7,7 @@
 // 这份从原 logic.test.mjs 拆出，同源的还有 -content、-rendering、-ui-state。
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { modelEntryFor, modelLabelFor, resolveModelDisplayName, resolveGatewayModelName, resolveModelPillText, resolveSendModel, defaultResolvedModel, effortLevelsFor, effortUiState, resolvePanelState, resolvePanelCwd, resolveSessionCwd, resolveWorktreeGoneNotice, aggregateStates, owningWorkspace, resolveDrawerStatus, resolveDrawerStatusChip, resolveRowTerminalState, mirrorRowLockChanged, isBlockedSurfaceTarget, formatSessionRowSubtitle, mergeOrphanRowsByTime, summarizeOtherWorkspaces, projectDisplayName, shouldShowStartScreen, shouldShowComposer, shouldShowTopContextPill, resolveEmptySurface, formatComposeDefaultsSummary, shouldRestoreOptimisticBusy, shouldClearInputOnBindView, planSessionDraftSwap, draftKeyFor, isAnsweredQuestionId, shouldDropAgentEvent, presentTurnResult, applyGatewaySuffix } from '../../app/public/js/logic.js';
+import { modelEntryFor, modelLabelFor, resolveModelDisplayName, resolveGatewayModelName, resolveModelPillText, resolveSendModel, defaultResolvedModel, effortLevelsFor, effortUiState, resolvePanelState, resolvePanelCwd, resolveSessionCwd, resolveWorktreeGoneNotice, aggregateStates, owningWorkspace, resolveDrawerStatus, resolveDrawerStatusChip, resolveRowTerminalState, mirrorRowLockChanged, isBlockedSurfaceTarget, formatSessionRowSubtitle, mergeOrphanRowsByTime, splitAutomatedRows, summarizeOtherWorkspaces, projectDisplayName, shouldShowStartScreen, shouldShowComposer, shouldShowTopContextPill, resolveEmptySurface, formatComposeDefaultsSummary, shouldRestoreOptimisticBusy, shouldClearInputOnBindView, planSessionDraftSwap, draftKeyFor, isAnsweredQuestionId, shouldDropAgentEvent, presentTurnResult, applyGatewaySuffix } from '../../app/public/js/logic.js';
 
 test('aggregateStates: 优先级 permission>error>busy>done>idle', () => {
   assert.equal(aggregateStates([{ cwd: '/a', state: 'busy' }, { cwd: '/a', state: 'permission' }], ['/a'])['/a'], 'permission');
@@ -1276,4 +1276,19 @@ test('mergeOrphanRowsByTime: 没有时间的已开会话排最前，列表本身
     'transcript 找不到的会话没有时间可排，放最前才看得见它开着',
   );
   assert.deepEqual(mergeOrphanRowsByTime(page, []).map(s => s.id), ['a', 'b']);
+});
+
+// 自动会话（turnOrigin==='sdk'，服务端 history.js 标注）单独成组：主列表不再被子 agent / 插件的
+// 会话挤占，用户一眼能看到自己要续的那条。分组不改顺序，只做稳定分类。
+test('splitAutomatedRows: 按 automated 分成两组，各自保持原顺序；缺字段按人手发起的会话', () => {
+  const rows = [
+    { id: 'human-1' },
+    { id: 'auto-1', automated: true },
+    { id: 'human-2', automated: false },
+    { id: 'auto-2', automated: true },
+  ];
+  const { main, automated } = splitAutomatedRows(rows);
+  assert.deepEqual(main.map(s => s.id), ['human-1', 'human-2']);
+  assert.deepEqual(automated.map(s => s.id), ['auto-1', 'auto-2']);
+  assert.deepEqual(splitAutomatedRows(undefined), { main: [], automated: [] });
 });

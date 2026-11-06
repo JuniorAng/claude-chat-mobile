@@ -2396,6 +2396,10 @@ video {
   color: var(--warning);
 }
 
+.text-warning\/80 {
+  color: color-mix(in srgb, var(--warning) calc(0.8 * 100%), transparent);
+}
+
 .text-white {
   --tw-text-opacity: 1;
   color: rgb(255 255 255 / var(--tw-text-opacity, 1));

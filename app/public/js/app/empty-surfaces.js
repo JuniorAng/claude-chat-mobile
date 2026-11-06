@@ -630,8 +630,12 @@ export function createEmptySurfaces(context, {
         // 是 showDashboard 的闭包、外部够不着。存 DOM 不存快照——省掉一份会和界面漂移的状态。
         if (s.id) item.dataset.sessionId = s.id;
         if (Number.isFinite(s.lastUsedAt)) item.dataset.lastUsedAt = String(s.lastUsedAt);
+        // 自动会话的归类也留在 dataset 上：重连/read:sync 时就地重算未读（refreshDashRecentUnreadMarks）
+        // 只从 dataset 重建行数据，漏了它就会把刚压下去的未读 chip 又加回来。
+        if (s.automated) item.dataset.automated = '1';
         // R65 未读（首页最近行）：与抽屉同款「未读」chip，inline-flex 前置进 truncate 容器，不改其块级截断语义。
-        if (s.id && unread.isUnread(s, { isViewing: s.id === getDisplayedSessionId() })) {
+        // 自动会话（插件 / 子 agent 提交）与抽屉同一条政策：不参与未读，避免同一个会话在两处一有一无。
+        if (s.id && !s.automated && unread.isUnread(s, { isViewing: s.id === getDisplayedSessionId() })) {
           item.querySelector('.dash-recent-title').prepend(dashUnreadMark());
         }
         item.querySelector('.dash-ws-icon').textContent = '📁';

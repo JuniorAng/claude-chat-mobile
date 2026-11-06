@@ -48,6 +48,50 @@ test('listSessions: 提取 title / model / entrypoint', async () => {
   assert.equal(result[0].entrypoint, 'cli');
 });
 
+// 抽屉把程序自动提交的会话（插件 / 子 agent 经 SDK 发起）单独成组。判据是首条主链 user 消息的
+// turnOrigin：'sdk' = 自动，'human' / 缺省（老 transcript）= 人。失败方向是「不归类」——把真实
+// 人手发的会话藏进自动组比漏归类更坏。
+test('listSessions: turnOrigin=sdk 标记为自动会话，human / 缺省不算', async () => {
+  const cwd = '/test/automated-origin';
+  const dir = join(BASE, getProjectDir(cwd));
+  writeJSONL(dir, 'sess-human', [
+    { type: 'user', turnOrigin: 'human', promptSource: 'sdk', entrypoint: 'sdk-ts', message: { role: 'user', content: '我发的' } },
+  ]);
+  writeJSONL(dir, 'sess-auto', [
+    { type: 'user', turnOrigin: 'sdk', promptSource: 'sdk', entrypoint: 'sdk-py', message: { role: 'user', content: '插件提交的' } },
+  ]);
+  writeJSONL(dir, 'sess-legacy', [
+    { type: 'user', entrypoint: 'cli', message: { role: 'user', content: '老会话没有 turnOrigin' } },
+  ]);
+  const rows = await listSessions(cwd, { baseDir: BASE });
+  assert.equal(rows.find(r => r.id === 'sess-auto').automated, true);
+  assert.equal(rows.find(r => r.id === 'sess-human').automated, false);
+  assert.equal(rows.find(r => r.id === 'sess-legacy').automated, false);
+});
+
+// 真机形态（2026-11-06，security-guidance 插件）：首行是把整份 diff 塞进 enqueue.content 的
+// queue-operation（单行 >64KB），真正的 user 行整条落在头窗之外。头窗里既没有可 parse 的 user 行，
+// 也没有 `"type":"user"` 字面量——探针必须仅凭「文件比头窗大」就启动，否则真实评审会话永远漏判。
+test('listSessions: 超大 queue-operation 首行之后的 user 行仍能识别为自动会话', async () => {
+  const cwd = '/test/automated-large-queue-head';
+  const dir = join(BASE, getProjectDir(cwd));
+  const big = 'x'.repeat(120 * 1024);
+  writeJSONL(dir, 'sess-big-queue-auto', [
+    { type: 'queue-operation', operation: 'enqueue', timestamp: '2026-11-05T13:59:01.952Z', content: big },
+    // 字段顺序与 CLI 写盘一致：turnOrigin / promptSource 排在 message 之后
+    { type: 'user', message: { role: 'user', content: big }, turnOrigin: 'sdk', promptSource: 'sdk', entrypoint: 'sdk-py' },
+    { type: 'assistant', message: { role: 'assistant', content: 'ok', model: 'claude-sonnet-5' } },
+  ]);
+  // 同样的超大首行、但 turnOrigin 是 human：必须一分不差地留在主列表（失败方向是「不归类」）
+  writeJSONL(dir, 'sess-big-queue-human', [
+    { type: 'queue-operation', operation: 'enqueue', timestamp: '2026-11-05T13:59:01.952Z', content: big },
+    { type: 'user', message: { role: 'user', content: big }, turnOrigin: 'human', promptSource: 'sdk', entrypoint: 'sdk-ts' },
+  ]);
+  const rows = await listSessions(cwd, { baseDir: BASE });
+  assert.equal(rows.find(r => r.id === 'sess-big-queue-auto').automated, true);
+  assert.equal(rows.find(r => r.id === 'sess-big-queue-human').automated, false);
+});
+
 // entrypoint-marker 是本仓自己写的假行（伪装 entrypoint:'cli' 骗 CLI /resume 选择器显示 web 会话，
 // 见 app/src/server/app.js writeSessionEntrypoint），恒在文件头、早于真实消息行。readHeadMeta 不该把它
 // 当成真实来源——否则所有 web 会话的 entrypoint 全部被误判成 cli（数据层面判错，即使当前无 UI 消费）。
@@ -570,7 +614,7 @@ test('listSessionsByIds: 取到 limit 窗口之外的会话，字段与列表主
 
   const rows = await listSessionsByIds(cwd, ['s0'], { baseDir: BASE });
   assert.equal(rows.length, 1);
-  assert.deepEqual(Object.keys(rows[0]).sort(), ['entrypoint', 'id', 'lastUsedAt', 'model', 'title'],
+  assert.deepEqual(Object.keys(rows[0]).sort(), ['automated', 'entrypoint', 'id', 'lastUsedAt', 'model', 'title'],
     '字段集必须与 scanViaReaddir 的行一致——少一个前端就在这几行上缺显示');
   assert.equal(rows[0].id, 's0');
   assert.equal(rows[0].title, '问题 0');

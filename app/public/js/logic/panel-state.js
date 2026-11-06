@@ -363,6 +363,16 @@ export function mergeOrphanRowsByTime(sessions, orphans) {
   return out.concat(dated.slice(i));
 }
 
+// 抽屉把「程序自动提交的会话」从主时间序里分出来（2026-11-06）。判据由服务端 readHeadMeta 提供
+// （首条主链 user 消息 turnOrigin==='sdk'）：插件 / 子 agent 的独立会话不跟人手发的会话混在同一层，
+// 否则用户分不清该续哪一条。纯分类，不改顺序：两组各自保留原时间序。
+export function splitAutomatedRows(rows) {
+  const main = [];
+  const automated = [];
+  for (const s of Array.isArray(rows) ? rows : []) (s?.automated ? automated : main).push(s);
+  return { main, automated };
+}
+
 // cwd 不在任何小节之下的活实例（例如刚进了仓库外的平级 worktree）：由抽屉单独成一节。
 export function unownedLiveInstances(instances, sectionKeys) {
   return (Array.isArray(instances) ? instances : [])
@@ -608,6 +618,7 @@ export function mergeRecentSessionsAcrossWorkspaces(dirLists, { limit = 8 } = {}
         workspaceName,
         worktree: s.worktree ?? null,
         entrypoint: s.entrypoint ?? null,
+        automated: s.automated === true,
         terminal: s.terminal ?? null, // 'busy'|'alive'|null：CLI 进程注册表自报的终端直跑态
       });
     }
@@ -824,8 +835,9 @@ export function shouldRerenderSessionList({
   if ((prevTotal ?? null) !== (nextTotal ?? null)) return true;
   // terminal 进签名：CLI 进程 busy/alive 状态或副文本变化必须重渲，否则抽屉会陈旧。
   // terminalSource 同理：状态不变、驾驶方从终端换成桌面端时，chip 与副文本的措辞也得跟着换。
+  // automated 进签名：分组归类变化（同一会话从主列表挪进/挪出「自动会话」组）必须重渲。
   const signature = list => (Array.isArray(list) ? list : [])
-    .map(s => `${s?.id || ''}:${(s?.title || '').slice(0, 40)}:${s?.lastUsedAt || ''}:${s?.terminal || ''}:${s?.terminalSource || ''}`)
+    .map(s => `${s?.id || ''}:${(s?.title || '').slice(0, 40)}:${s?.lastUsedAt || ''}:${s?.terminal || ''}:${s?.terminalSource || ''}:${s?.automated ? 1 : 0}`)
     .join('|');
   // pinned（手动标「稍后再看」、被 limit 挤出本页而单独补回的那组）必须单独进判据：它的成员来自
   // read-state 而不是这一页，主列表签名一个字都不变时它照样会增删——用户在另一台设备上标一条、
