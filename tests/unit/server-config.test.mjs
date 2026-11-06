@@ -356,3 +356,22 @@ test('parseServerConfig：ACCESS_PROFILE 合法值原样、未知值归空（与
   assert.equal(parseServerConfig({ ACCESS_PROFILE: 'tailscale' }, opts).accessProfile, '');
   assert.equal(parseServerConfig({}, opts).accessProfile, '');
 });
+
+// 新会话默认档（2026-11-06）：配置面板写进 ccm.config.json / .env，启动时读出。
+// 这里只管 trim；合法性（effort / 权限档白名单）由 app.js 用 cli-settings-defaults 的函数归一，
+// 因此手改配置写进未知值时这里是原样字符串、下游会安全地当「未配置」。
+test('parseServerConfig：新会话默认档原样读出并去空白，缺省为空串', () => {
+  const opts = { home: '/h', projectRoot: '/repo' };
+  const config = parseServerConfig({
+    CCM_DEFAULT_MODEL: '  sonnet  ',
+    CCM_DEFAULT_EFFORT: ' medium ',
+    CCM_DEFAULT_PERMISSION_MODE: 'auto',
+  }, opts);
+  assert.equal(config.defaultModel, 'sonnet');
+  assert.equal(config.defaultEffort, 'medium');
+  assert.equal(config.defaultPermissionMode, 'auto');
+  const empty = parseServerConfig({}, opts);
+  assert.equal(empty.defaultModel, '');
+  assert.equal(empty.defaultEffort, '');
+  assert.equal(empty.defaultPermissionMode, '');
+});

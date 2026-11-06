@@ -121,6 +121,14 @@ export function parseServerConfig(env, {
     notifyThrottleMs: nonNegativeNumber(env.NOTIFY_THROTTLE_MS, DEFAULT_NOTIFY_THROTTLE_MS),
     sessionDeleteQuietMs: nonNegativeNumber(env.SESSION_DELETE_QUIET_MS, DEFAULT_SESSION_DELETE_QUIET_MS),
     devMode: env.DEV_MODE === '1',
+    // 新会话默认档（web 侧专用，不改变终端 claude 的行为）。空串 = 跟随 CLI settings。
+    // 合法性/归一在 app.js（那里已 import 权限档与 effort 档的白名单函数）；这里只去掉首尾空白，
+    // 让 parseServerConfig 保持「字符串进字符串出」的既有形状。
+    defaultModel: typeof env.CCM_DEFAULT_MODEL === 'string' ? env.CCM_DEFAULT_MODEL.trim() : '',
+    defaultEffort: typeof env.CCM_DEFAULT_EFFORT === 'string' ? env.CCM_DEFAULT_EFFORT.trim() : '',
+    defaultPermissionMode: typeof env.CCM_DEFAULT_PERMISSION_MODE === 'string'
+      ? env.CCM_DEFAULT_PERMISSION_MODE.trim()
+      : '',
     // 监听地址的两个输入原样透传，判定留给 src/shared/bind-host.js 的 resolveBindPlan
     //（server 与两个 doctor 共用那一份，此处再判一次就又有分叉余地了）。
     bindMode: env.BIND_MODE || '',

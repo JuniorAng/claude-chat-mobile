@@ -18,6 +18,7 @@ import { existsSync, realpathSync } from 'node:fs';
 import { homedir } from 'node:os';
 // 跨模块引一次 doctor 的 D18：本文件末尾那条「判据同源」断言要拿它当对照物。
 import { envOverrideDiagnostic } from '../../app/src/ops/doctor-checks.js';
+import { CCM_PERMISSION_MODES, UI_EFFORT_LEVELS } from '../../app/src/agent/cli-settings-defaults.js';
 // 同理，末尾 CCM_AGENT_PROGRESS_SUMMARIES 那组要把「配置侧投影」与「消费侧判据」串起来跑，
 // 单独断言任何一边的字面量都挡不住两边一起改错。
 import { projectToEnv } from '../../app/src/ops/config-file.js';
@@ -949,4 +950,16 @@ test('配置项的 label / help（中英）不含 markdown 加粗符号：面板
     }
   }
   assert.deepEqual(offenders, []);
+});
+
+// 新会话默认档（2026-11-06）：schema 的枚举值必须与运行时白名单同源。两边各写一份字面量很容易
+// 漂移成「面板让你选 xhigh，归一函数不认、静默回落 CLI settings」——用户以为选好了，实际没生效。
+test('新会话默认档：权限/effort 枚举与运行时白名单逐项一致', () => {
+  const permissionOptions = ENV_SCHEMA.CCM_DEFAULT_PERMISSION_MODE.options.map(o => o.value).filter(Boolean);
+  const effortOptions = ENV_SCHEMA.CCM_DEFAULT_EFFORT.options.map(o => o.value).filter(Boolean);
+  assert.deepEqual(permissionOptions, [...CCM_PERMISSION_MODES]);
+  assert.deepEqual(effortOptions, [...UI_EFFORT_LEVELS]);
+  for (const key of ['CCM_DEFAULT_MODEL', 'CCM_DEFAULT_EFFORT', 'CCM_DEFAULT_PERMISSION_MODE']) {
+    assert.ok(WRITABLE_KEYS.includes(key), `${key} 必须能从配置面板写入`);
+  }
 });

@@ -192,6 +192,56 @@ test.describe('resolveFreshPrefs（L0 > L3 > L4）', () => {
       'sonnet',
     );
   });
+
+  // L3.5：配置面板里的「新会话默认档」。它压过 CLI settings，但压不过用户在空首页手点的 pending；
+  // 显示来源按 user（磁贴高亮），不是 cli-settings（那样界面会显示成「CLI 默认」而用户以为自己没选）。
+  test('userDefaults 覆盖 L3 的 mode/effort，来源记 user', () => {
+    assert.deepEqual(
+      resolveFreshPrefs({ cliDefaults: cliLow, userDefaults: { mode: 'auto', effort: 'medium' } }),
+      { mode: 'auto', effort: 'medium', effortSource: 'user', ultracode: false, model: undefined },
+    );
+  });
+
+  test('pending 仍压过 userDefaults（用户在空首页的即时选择最权威）', () => {
+    assert.deepEqual(
+      resolveFreshPrefs({
+        hasPendingMode: true,
+        pendingMode: 'plan',
+        hasPendingEffort: true,
+        pendingEffort: 'high',
+        cliDefaults: cliLow,
+        userDefaults: { mode: 'auto', effort: 'medium' },
+      }),
+      { mode: 'plan', effort: 'high', effortSource: 'user', ultracode: false, model: undefined },
+    );
+  });
+
+  test('userDefaults 的 ultracode / auto 按 UI 档处理', () => {
+    assert.deepEqual(
+      resolveFreshPrefs({ userDefaults: { effort: 'ultracode' } }),
+      { mode: 'default', effort: 'xhigh', effortSource: 'user', ultracode: true, model: undefined },
+    );
+    assert.equal(resolveFreshPrefs({ userDefaults: { effort: 'auto' } }).effort, 'auto');
+  });
+
+  test('settings 禁用 auto 时 userDefaults 的 auto 回落 L3 档', () => {
+    assert.equal(
+      resolveFreshPrefs({
+        userDefaults: { mode: 'auto' },
+        cliDefaults: { mode: 'acceptEdits', effort: null, autoModeDisabled: true },
+      }).mode,
+      'acceptEdits',
+    );
+  });
+
+  test('userDefaults 空串 / 非法值不覆盖 L3', () => {
+    assert.equal(resolveFreshPrefs({ cliDefaults: cliLow, userDefaults: { mode: '', effort: '' } }).mode, 'acceptEdits');
+    assert.equal(resolveFreshPrefs({ cliDefaults: cliLow }).mode, 'acceptEdits');
+    assert.equal(
+      resolveFreshPrefs({ cliDefaults: cliLow, userDefaults: { mode: 'garbage', effort: 'garbage' } }).mode,
+      'acceptEdits',
+    );
+  });
 });
 
 test.describe('resolveResumeEffort（resume 专用：saved > L3，全部按归一后 ?? 语义折叠；带出来源）', () => {
