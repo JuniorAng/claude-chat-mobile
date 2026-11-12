@@ -3349,15 +3349,20 @@ io.on('connection', socket => {
         { name: 'conflict.js', kind: 'file', size: 20, mtime: Date.now() },
         { name: 'notes.txt', kind: 'file', size: 30, mtime: Date.now() },
         { name: 'dense.log', kind: 'file', size: 12_000, mtime: Date.now() },
+        { name: 'report.html', kind: 'file', size: 40, mtime: Date.now() },
+        { name: 'flow.mmd', kind: 'file', size: 20, mtime: Date.now() },
+        { name: 'diagram.drawio', kind: 'file', size: 180, mtime: Date.now() },
       ],
       truncated: false,
-      totalCount: 6,
+      totalCount: 9,
     });
   });
 
   // P0-EDIT：demo.js 可变内容 + mock "hash"（就用内容本身当哈希——不用跟真 sha256 位对位，
   // 只要「变了就不同、没变就相同」这个契约成立即可）。per-connection 状态，each gotoMock 一份新的。
   let mockDemoJsContent = 'function greet(name) {\n  return `Hello, ${name}!`;\n}\n';
+  const MOCK_DRAWIO = '<mxfile><diagram id="d" name="Page-1"><mxGraphModel><root><mxCell id="0"/><mxCell id="1" parent="0"/><mxCell id="2" value="Editable" style="rounded=0;whiteSpace=wrap;html=1;" vertex="1" parent="1"><mxGeometry x="40" y="40" width="160" height="60" as="geometry"/></mxCell></root></mxGraphModel></diagram></mxfile>';
+  let mockDrawioContent = MOCK_DRAWIO;
   const mockHashOf = text => `mockhash:${text}`;
 
   // 文件链接：回包形态同 socket-files.js 的 file:open，按 path 查 fixture，不做范围判定。
@@ -3401,6 +3406,19 @@ io.on('connection', socket => {
     // O40：没有高亮 mode 的扩展名（.txt）一次性读全 + 带 contentHash → 前端照样挂 CM（行号）、给编辑。
     if (encoding !== 'base64' && String(relPath || '') === 'notes.txt') {
       const text = 'first line\nsecond line\nthird line\n';
+      return callback({ ok: true, content: text, totalSize: text.length, bytesRead: text.length, truncated: false, binary: false, contentHash: mockHashOf(text) });
+    }
+    // 预览器 fixtures：html / mermaid / drawio 各一份，供 file-browser.spec.ts 的预览用例。
+    if (encoding !== 'base64' && String(relPath || '') === 'report.html') {
+      const text = '<!doctype html><html><body style="background:rgb(1,2,3)"><h1>REPORT</h1></body></html>';
+      return callback({ ok: true, content: text, totalSize: text.length, bytesRead: text.length, truncated: false, binary: false, contentHash: mockHashOf(text) });
+    }
+    if (encoding !== 'base64' && String(relPath || '') === 'flow.mmd') {
+      const text = 'graph TD; A-->B;';
+      return callback({ ok: true, content: text, totalSize: text.length, bytesRead: text.length, truncated: false, binary: false, contentHash: mockHashOf(text) });
+    }
+    if (encoding !== 'base64' && String(relPath || '') === 'diagram.drawio') {
+      const text = mockDrawioContent;
       return callback({ ok: true, content: text, totalSize: text.length, bytesRead: text.length, truncated: false, binary: false, contentHash: mockHashOf(text) });
     }
     // P0-21d：换行密集的无 mode 文件（6000 行），一次性读全也不该挂 CM（viewportMargin: Infinity 会逐行建 DOM）。
@@ -3484,6 +3502,13 @@ io.on('connection', socket => {
     console.log(`[mock] files:write relPath=${relPath}`);
     if (String(relPath || '') === 'conflict.js') {
       return callback({ ok: false, code: 'conflict', error: '文件已被修改（可能是 Claude 正在改），请刷新后重试' });
+    }
+    if (String(relPath || '') === 'diagram.drawio') {
+      if (baseHash !== mockHashOf(mockDrawioContent)) {
+        return callback({ ok: false, code: 'conflict', error: '文件已被修改（可能是 Claude 正在改），请刷新后重试' });
+      }
+      mockDrawioContent = String(content || '');
+      return callback({ ok: true, contentHash: mockHashOf(mockDrawioContent), bytesWritten: mockDrawioContent.length });
     }
     if (String(relPath || '') !== 'demo.js') {
       return callback({ ok: false, code: 'not_found', error: 'mock 只支持写 demo.js' });

@@ -1,6 +1,8 @@
 /* global CodeMirror */
 import { t } from '../i18n.js';
 import { lineSpan } from '../logic/file-links.js';
+import { sortBrowseEntries } from '../logic/file-sort.js';
+import { formatBrowseTime } from '../logic/message-time.js';
 import { showPanelMessage } from './panel-message.js';
 
 const ICONS = { dir: '📁', file: '📄', symlink: '🔗' };
@@ -53,6 +55,13 @@ export function cmModeForFileName(name) {
   return CM_MIME_BY_EXT[ext] || null;
 }
 
+// drawio 的公开嵌入协议：div.mxgraph + data-mxgraph(原始 JSON)。setAttribute 会处理引号转义，
+// 不能再 encodeURIComponent——viewer 直接 JSON.parse 这个属性（实测报 "Unexpected token '%'"）。
+// XML 全文交给 viewer 自己解析，不经我们 innerHTML。
+export function drawioEmbedJson(xml) {
+  return JSON.stringify({ xml, toolbar: '', nav: false, resize: true });
+}
+
 export function createFileBrowser(context, {
   baseName = path => String(path || '').split('/').filter(Boolean).pop() || '',
   // 编辑态下经返回/关闭/切 tab/点背景退出前的二次确认（由 app.js 注入 appConfirm 包装）；默认放行，
@@ -60,6 +69,9 @@ export function createFileBrowser(context, {
   confirmDiscardEdit = async () => true,
   createElement,
   haptic = () => {},
+  renderMarkdown = null, // 与消息正文同一份 marked + DOMPurify，见 renderContent 的 markdown 预览
+  sanitizeHtml = null,   // 预览器输出的第二道净化（mermaid/drawio）；未注入时预览回源码（fail closed）
+  getDrawioEditor = () => null, // drawio 内联编辑器桥（app/drawio-editor.js）；惰性注入避免与控制器互相构造
 } = {}) {
   const dom = context.dom;
   const documentRef = context.dependencies.document || globalThis.document;
@@ -71,6 +83,8 @@ export function createFileBrowser(context, {
   let listOffset = 0;
   let listTruncated = false;
   let listTotal = 0;
+  let sortKey = 'name';   // 'name' | 'mtime' | 'size'；name 模式的顺序就是服务端顺序（分页游标依赖它）
+  let sortDir = 'asc';
   let contentText = '';
   let contentOffset = 0;
   let contentReadGen = 0; // 每发一次 browse:read 加一，见 fetchContentPage
@@ -79,8 +93,14 @@ export function createFileBrowser(context, {
   let editMode = 'view';   // 'view' | 'editing'；离开 content 模式（back/loadContent 新文件）即复位
   let baseHash = null;     // files:write 的冲突基线——来自最近一次 browse:read 或 files:write 成功后的 contentHash
   let editOnDemand = false; // 行多的纯文本：查看留在 <pre>，点「编辑」才挂 CM（验收 O103，见 renderContent）
+  let previewKind = null; // null | 'markdown' | 'html' | 'mermaid' | 'drawio'；编辑/保存后回到同一种预览
   let codeMirrorLoad = null; // CM 脚本的按需加载，见 loadCodeMirror
   let codeMirrorReady = false; // 整包（核心＋全部 mode）都执行完才算；核心先执行，全局在不等于 mode 到齐
+  let mermaidLoad = null;   // mermaid 脚本的按需加载（同 CodeMirror 的单例模式）
+  let mermaidSeq = 0;       // mermaid.render 要唯一 DOM id
+  let drawioViewerLoad = null; // drawio 只读 viewer 的按需加载
+  let drawioEditing = false; // 内联 drawio 编辑器是否正在接管正文区
+  let previewPending = false; // 异步预览器（mermaid/drawio）还在加载：此时不给「编辑」
   let targetLine = null;   // 文件链接带的行号，定位到后清掉
   let autoPages = 0;       // 为了够到 targetLine 已自动续读的页数
 
@@ -155,7 +175,10 @@ export function createFileBrowser(context, {
       showMessage(t('（空目录）'));
       return;
     }
-    for (const entry of listEntries) {
+    // 排序只作用于已加载条目；服务端顺序仍按名字分页（见 logic/file-sort.js 的 shortcut 注释）。
+    const now = Date.now();
+    const ordered = sortBrowseEntries(listEntries, { key: sortKey, dir: sortDir });
+    for (const entry of ordered) {
       const row = createElement('<button class="w-full flex items-center gap-2 px-4 py-2.5 border-b border-line-soft text-left hover:bg-sunk/30 active:opacity-70" data-testid="browse-entry"></button>');
       const icon = createElement('<span class="shrink-0 w-5 text-center"></span>');
       icon.textContent = ICONS[entry.kind] || '❔';
@@ -163,10 +186,15 @@ export function createFileBrowser(context, {
       const name = createElement('<span class="flex-1 min-w-0 truncate text-xs text-ink"></span>');
       name.textContent = entry.name;
       row.appendChild(name);
-      if (entry.kind === 'file') {
-        const size = createElement('<span class="shrink-0 text-[10px] text-ink-faint"></span>');
-        size.textContent = formatFileSize(entry.size);
-        row.appendChild(size);
+      // 名称模式维持现状（文件显示大小、目录不显示）；按修改时间排序时两行都显示时间。
+      const meta = entry.kind === 'dir'
+        ? (sortKey === 'mtime' ? formatBrowseTime(entry.mtime, { now }) : '')
+        : [formatFileSize(entry.size), sortKey === 'mtime' ? formatBrowseTime(entry.mtime, { now }) : '']
+          .filter(Boolean).join(' · ');
+      if (meta) {
+        const cell = createElement('<span class="shrink-0 text-[10px] text-ink-faint"></span>');
+        cell.textContent = meta;
+        row.appendChild(cell);
       }
       row.onclick = () => {
         haptic('tap');
@@ -322,19 +350,67 @@ export function createFileBrowser(context, {
 
   // 三态互斥：可编辑且未在编辑 → 编辑；正在编辑 → 保存+取消。不可编辑（无 baseHash：截断/二进制，或分页续读过）
   // → 三个都不显，file-browse.js 只读铁律的既有语义在这些场景下原样保留。
+  // 排序控件只在列表模式可见；内容视图已经有编辑/保存/下载，再挤两个控件会把路径压没。
+  function syncSortControls() {
+    const listMode = mode === 'list';
+    dom.fileBrowseSortGroup?.classList.toggle('hidden', !listMode);
+    if (!listMode) return;
+    if (dom.fileBrowseSortKey) dom.fileBrowseSortKey.value = sortKey;
+    if (dom.fileBrowseSortDir) {
+      dom.fileBrowseSortDir.textContent = sortDir === 'asc' ? '↑' : '↓';
+      const label = sortDir === 'asc' ? t('升序') : t('降序');
+      dom.fileBrowseSortDir.setAttribute?.('aria-label', label);
+      dom.fileBrowseSortDir.title = label;
+    }
+  }
+
   function syncEditButtons() {
-    const editable = Boolean(baseHash) && (Boolean(cmInstance) || editOnDemand);
+    syncSortControls();
+    const editable = Boolean(baseHash) && (Boolean(cmInstance) || editOnDemand) && !drawioEditing && !previewPending;
     dom.fileBrowseEdit?.classList.toggle('hidden', !(editable && editMode === 'view'));
     dom.fileBrowseSave?.classList.toggle('hidden', editMode !== 'editing');
     dom.fileBrowseCancelEdit?.classList.toggle('hidden', editMode !== 'editing');
-    dom.fileBrowseDownload?.classList.toggle('hidden', mode !== 'content' || !fileName || editMode === 'editing');
+    dom.fileBrowseDownload?.classList.toggle('hidden', mode !== 'content' || !fileName || editMode === 'editing' || drawioEditing);
+  }
+
+  // 预览上方的一行提示（宽屏要求 / 放弃修改）。不替换正文，下一次 renderPreview 自然消失。
+  function showPreviewNotice(text, testid) {
+    if (!dom.fileBrowseBody) return;
+    const notice = documentRef.createElement('div');
+    notice.className = 'px-4 py-1.5 text-[10px] text-ink-faint border-b border-line-soft';
+    if (testid) notice.setAttribute('data-testid', testid);
+    notice.textContent = text;
+    dom.fileBrowseBody.prepend?.(notice);
   }
 
   function enterEditMode() {
+    // .drawio：宽屏走内联 drawio 编辑器；窄屏给一句说明并退回源码编辑（不是破碎的 UI）。
+    const drawioEditor = getDrawioEditor();
+    let showWideHint = false;
+    if (previewKind === 'drawio' && drawioEditor) {
+      if (drawioEditor.widthCheck()) {
+        hideSaveError();
+        drawioEditing = true;
+        editMode = 'view';
+        drawioEditor.open({
+          host: dom.fileBrowseBody,
+          xml: contentText,
+          name: fileName,
+          baseHash,
+          cwd,
+          relPath: segments.concat(fileName).join('/'),
+        });
+        syncEditButtons();
+        return;
+      }
+      showWideHint = true;
+    }
     if (!cmInstance && editOnDemand && baseHash) {
       dom.fileBrowseBody.innerHTML = '';
-      mountCodeMirror('text/plain');
+      mountCodeMirror(cmModeForFileName(fileName) || 'text/plain');
     }
+    // 提示要在挂 CM 之后加：挂载会清空正文区，先加就被抹掉了。
+    if (showWideHint) showPreviewNotice(t('这个编辑器需要更宽的屏幕；已改用源码编辑'), 'drawio-needs-wide');
     if (!cmInstance || editMode !== 'view') return;
     haptic('tap');
     hideSaveError();
@@ -350,7 +426,8 @@ export function createFileBrowser(context, {
     cmInstance?.setValue(contentText); // 撤销未保存的改动，回到加载/上次保存成功时的内容
     editMode = 'view';
     hideSaveError();
-    cmInstance?.setOption('readOnly', 'nocursor');
+    if (previewKind) renderPreview();
+    else cmInstance?.setOption('readOnly', 'nocursor');
     syncEditButtons();
   }
 
@@ -372,7 +449,8 @@ export function createFileBrowser(context, {
       contentText = newContent; // 基线随保存前移：取消编辑不会丢刚保存成功的内容
       baseHash = response.contentHash;
       editMode = 'view';
-      cmInstance.setOption('readOnly', 'nocursor');
+      if (previewKind) renderPreview();
+      else cmInstance.setOption('readOnly', 'nocursor');
       syncEditButtons();
     });
   }
@@ -391,6 +469,175 @@ export function createFileBrowser(context, {
     });
   }
 
+  // 按扩展名决定预览器。html/htm → 沙箱 iframe；md 系列 → 渲染后的 markdown。
+  function previewableKind(name) {
+    const dot = String(name || '').lastIndexOf('.');
+    const ext = dot < 0 ? '' : name.slice(dot + 1).toLowerCase();
+    if (ext === 'html' || ext === 'htm') return 'html';
+    if (ext === 'md' || ext === 'markdown' || ext === 'mdx') return 'markdown';
+    if (ext === 'mmd' || ext === 'mermaid') return 'mermaid';
+    if (ext === 'drawio' || ext === 'dio') return 'drawio';
+    return null;
+  }
+
+  function renderPreview() {
+    if (previewKind === 'html') renderHtmlPreview();
+    else if (previewKind === 'mermaid') renderMermaidPreview();
+    else if (previewKind === 'drawio') renderDrawioPreview();
+    else renderMarkdownPreview();
+  }
+
+  function loadMermaid() {
+    if (typeof globalThis.mermaid !== 'undefined') return Promise.resolve(globalThis.mermaid);
+    if (!mermaidLoad) {
+      const version = new URL(import.meta.url).searchParams.get('v');
+      mermaidLoad = new Promise((resolve, reject) => {
+        const script = documentRef.createElement('script');
+        script.async = false;
+        script.onload = resolve;
+        script.onerror = reject;
+        script.src = `/vendor/mermaid.min.js${version ? `?v=${version}` : ''}`;
+        documentRef.head.appendChild(script);
+      }).then(() => globalThis.mermaid || null, () => { mermaidLoad = null; return null; });
+    }
+    return mermaidLoad;
+  }
+
+  // .mmd / .mermaid 渲染成 SVG。securityLevel 'strict' 是 mermaid 自己的净化，输出再经注入的
+  // sanitizeHtml 洗一遍；没注入就回源码（fail closed），绝不直接插未净化的 SVG。
+  async function renderMermaidPreview() {
+    // 快照：await 之后任何一项变了（换文件 / 进编辑 / 打开 drawio 编辑器），这次渲染都必须作废——
+    // 否则迟到的渲染会清掉用户正在看的编辑器或另一个文件的预览。
+    const gen = contentReadGen;
+    const source = contentText;
+    const cancelled = () => gen !== contentReadGen || mode !== 'content' || previewKind !== 'mermaid'
+      || editMode !== 'view' || drawioEditing;
+    previewPending = true;
+    showMessage(t('加载中…'));
+    syncEditButtons();
+    const mermaid = await loadMermaid();
+    if (cancelled()) return;
+    previewPending = false;
+    if (!mermaid || typeof sanitizeHtml !== 'function') {
+      renderSourceFallback(t('渲染失败，已显示源码'));
+      return;
+    }
+    mermaid.initialize({
+      startOnLoad: false,
+      securityLevel: 'strict',
+      theme: documentRef.documentElement?.dataset?.theme === 'dark' ? 'dark' : 'default',
+    });
+    try {
+      const { svg } = await mermaid.render(`ccm-mermaid-${++mermaidSeq}`, source);
+      if (cancelled()) return;
+      const holder = documentRef.createElement('div');
+      holder.className = 'p-4 overflow-auto';
+      holder.innerHTML = sanitizeHtml(svg);
+      dom.fileBrowseBody.innerHTML = '';
+      cmInstance = null;
+      dom.fileBrowseBody.appendChild(holder);
+      previewPending = false;
+      syncEditButtons();
+    } catch (err) {
+      if (cancelled()) return;
+      renderSourceFallback(`${t('渲染失败，已显示源码')}：${String(err?.message || err).slice(0, 80)}`);
+    }
+  }
+
+  function loadDrawioViewer() {
+    if (typeof globalThis.GraphViewer !== 'undefined') return Promise.resolve(globalThis.GraphViewer);
+    if (!drawioViewerLoad) {
+      const version = new URL(import.meta.url).searchParams.get('v');
+      drawioViewerLoad = new Promise((resolve, reject) => {
+        const script = documentRef.createElement('script');
+        script.async = false;
+        script.onload = resolve;
+        script.onerror = reject;
+        script.src = `/vendor/drawio/viewer-static.min.js${version ? `?v=${version}` : ''}`;
+        documentRef.head.appendChild(script);
+      }).then(() => globalThis.GraphViewer || null, () => { drawioViewerLoad = null; return null; });
+    }
+    return drawioViewerLoad;
+  }
+
+  // .drawio / .dio：只读渲染成 SVG。viewer 自己处理压缩态 <diagram> 与 html=1 label；
+  // 脚本被主编排页的 CSP 拦住，图里的 HTML 只作展示。
+  async function renderDrawioPreview() {
+    const gen = contentReadGen;
+    const cancelled = () => gen !== contentReadGen || mode !== 'content' || previewKind !== 'drawio'
+      || editMode !== 'view' || drawioEditing;
+    previewPending = true;
+    showMessage(t('加载中…'));
+    syncEditButtons();
+    const viewer = await loadDrawioViewer();
+    if (cancelled()) return;
+    previewPending = false;
+    if (!viewer) { renderSourceFallback(t('渲染失败，已显示源码')); return; }
+    dom.fileBrowseBody.innerHTML = '';
+    cmInstance = null;
+    const holder = documentRef.createElement('div');
+    holder.className = 'mxgraph p-2';
+    holder.setAttribute('data-testid', 'file-preview-drawio');
+    holder.setAttribute('data-mxgraph', drawioEmbedJson(contentText));
+    dom.fileBrowseBody.appendChild(holder);
+    previewPending = false;
+    syncEditButtons();
+    try {
+      viewer.processElements();
+    } catch (err) {
+      if (cancelled()) return;
+      renderSourceFallback(`${t('渲染失败，已显示源码')}：${String(err?.message || err).slice(0, 80)}`);
+    }
+  }
+
+  // 预览失败时的统一退路：一行原因 + 源码。绝不留空白面板。
+  function renderSourceFallback(reason) {
+    if (!dom.fileBrowseBody) return;
+    dom.fileBrowseBody.innerHTML = '';
+    cmInstance = null;
+    previewKind = null;
+    previewPending = false;
+    const notice = documentRef.createElement('div');
+    notice.className = 'px-4 py-1.5 text-[10px] text-ink-faint border-b border-line-soft';
+    notice.setAttribute('data-testid', 'file-preview-fallback');
+    notice.textContent = reason;
+    const pre = documentRef.createElement('pre');
+    pre.className = 'p-4 text-[11px] leading-relaxed font-mono text-ink whitespace-pre-wrap break-words';
+    pre.textContent = contentText;
+    dom.fileBrowseBody.append(notice, pre);
+    editOnDemand = Boolean(baseHash) && typeof CodeMirror !== 'undefined';
+    syncEditButtons();
+  }
+
+  // HTML 只进 iframe 的 srcdoc，绝不进父页 innerHTML。sandbox 留空 = 无 allow-scripts、无 allow-same-origin：
+  // 脚本被拦，且它读不到 CCM 的 localStorage（token 在那里）。样式照常生效，相对图片/外链会被 CSP 拦。
+  function renderHtmlPreview() {
+    if (!dom.fileBrowseBody) return;
+    dom.fileBrowseBody.innerHTML = '';
+    cmInstance = null;
+    const notice = documentRef.createElement('div');
+    notice.className = 'px-4 py-1.5 text-[10px] text-ink-faint border-b border-line-soft';
+    notice.textContent = t('预览已禁用脚本与外链图片；要改就点「编辑」');
+    const frame = documentRef.createElement('iframe');
+    frame.className = 'w-full h-full border-0 bg-white';
+    frame.setAttribute('sandbox', '');
+    frame.setAttribute('data-testid', 'file-preview-html');
+    frame.srcdoc = contentText;
+    dom.fileBrowseBody.append(notice, frame);
+  }
+
+  // contentText 已经过注入的 renderMarkdown（marked + DOMPurify，含消息链路那套禁 label/form/style 的配置），
+  // 直接 innerHTML 是安全的。
+  function renderMarkdownPreview() {
+    if (!dom.fileBrowseBody) return;
+    dom.fileBrowseBody.innerHTML = '';
+    cmInstance = null;
+    const article = documentRef.createElement('div');
+    article.className = 'msg-body p-4'; // 复用消息正文的排版：serif 阅读字体、标题/列表/表格/代码块样式
+    article.innerHTML = renderMarkdown(contentText);
+    dom.fileBrowseBody.appendChild(article);
+  }
+
   // 目标行放到视口上方三分之一处，上文也看得到
   function scrollBodyTo(windowY) {
     const body = dom.fileBrowseBody;
@@ -401,6 +648,8 @@ export function createFileBrowser(context, {
     if (!dom.fileBrowseBody) return;
     dom.fileBrowseBody.innerHTML = '';
     cmInstance = null;
+    previewKind = null;
+    previewPending = false;
     editMode = 'view';
     editOnDemand = false;
     baseHash = contentHash || null;
@@ -411,6 +660,17 @@ export function createFileBrowser(context, {
     // 但能不能编辑只看 baseHash：这类文件「编辑」照给，点了才挂 CM——那时的逐行建 DOM 是用户要编辑才付的，
     // 而只是看一眼的不付（验收 O103：几 KB 的 .txt 因行多不能编辑，256KB 的 .js 却能）。
     const highlighted = cmModeForFileName(fileName);
+    // markdown / html 一次性读全时直接渲染（读文档不该看源码）；带行号的链接定位、截断/分页仍走源码视图，
+    // 前者要按行滚动，后者渲染半篇没有意义。点「编辑」才挂 CM 显示源码，取消/保存后回到预览。
+    const kind = previewableKind(fileName);
+    if (kind && !targetLine && !usedPagination && !truncated
+      && (kind !== 'markdown' || typeof renderMarkdown === 'function')) {
+      previewKind = kind;
+      editOnDemand = Boolean(baseHash) && typeof CodeMirror !== 'undefined';
+      renderPreview();
+      syncEditButtons();
+      return;
+    }
     const plainOk = !highlighted && contentText.split('\n').length <= PLAIN_CM_MAX_LINES;
     const mime = !usedPagination && !truncated ? (highlighted || (plainOk ? 'text/plain' : null)) : null;
     if (mime && typeof CodeMirror !== 'undefined') {
@@ -463,7 +723,10 @@ export function createFileBrowser(context, {
   // 离开 content 视图（回列表 / 换 cwd 重开）：清掉编辑三态与 CM 实例引用，隐藏编辑按钮组——
   // 否则上一个文件的「编辑」按钮会残留可见在列表视图里，或误挂着已失效的 baseHash。
   function resetEditState() {
+    getDrawioEditor()?.close?.();
+    drawioEditing = false;
     cmInstance = null;
+    previewKind = null;
     editMode = 'view';
     editOnDemand = false;
     baseHash = null;
@@ -473,7 +736,7 @@ export function createFileBrowser(context, {
 
   // 编辑态下未保存改动才拦；view 态/无改动直接放行，不多问一句。
   async function confirmLeaveIfEditing() {
-    if (editMode !== 'editing') return true;
+    if (editMode !== 'editing' && !drawioEditing) return true;
     return confirmDiscardEdit();
   }
 
@@ -501,6 +764,8 @@ export function createFileBrowser(context, {
     segments = [];
     mode = 'list';
     fileName = null;
+    sortKey = 'name';
+    sortDir = 'asc';
     resetEditState();
     loadList();
   }
@@ -540,6 +805,21 @@ export function createFileBrowser(context, {
     });
   }
 
+  if (dom.fileBrowseSortKey) {
+    dom.fileBrowseSortKey.onchange = () => {
+      sortKey = dom.fileBrowseSortKey.value;
+      haptic('tap');
+      renderList();
+    };
+  }
+  if (dom.fileBrowseSortDir) {
+    dom.fileBrowseSortDir.onclick = () => {
+      sortDir = sortDir === 'asc' ? 'desc' : 'asc';
+      haptic('tap');
+      syncSortControls();
+      renderList();
+    };
+  }
   if (dom.fileBrowseBack) dom.fileBrowseBack.onclick = back;
   if (dom.fileBrowseDownload) dom.fileBrowseDownload.onclick = download;
   if (dom.fileBrowseEdit) dom.fileBrowseEdit.onclick = enterEditMode;
@@ -548,5 +828,25 @@ export function createFileBrowser(context, {
 
   // confirmLeaveIfEditing 外露：关闭面板与**切到「改动」tab**都要先过这道未保存确认，
   // 否则切个 tab 就把用户没保存的编辑静默丢了。
-  return { back, open, openTarget, confirmLeaveIfEditing, stopMedia };
+  // drawio 编辑器的保存/退出回执（由 app.js 注入的桥回调）。
+  function applyDrawioSave(xml, contentHash) {
+    if (!drawioEditing) return;
+    drawioEditing = false;
+    contentText = xml;
+    baseHash = contentHash || baseHash;
+    editMode = 'view';
+    hideSaveError();
+    renderPreview();
+    syncEditButtons();
+  }
+  function applyDrawioExit() {
+    if (!drawioEditing) return;
+    drawioEditing = false;
+    editMode = 'view';
+    renderPreview();
+    showPreviewNotice(t('已放弃未保存的修改'), 'drawio-edit-exit');
+    syncEditButtons();
+  }
+
+  return { back, open, openTarget, confirmLeaveIfEditing, stopMedia, applyDrawioSave, applyDrawioExit };
 }

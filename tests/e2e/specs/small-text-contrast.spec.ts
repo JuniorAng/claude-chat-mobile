@@ -119,11 +119,11 @@ test.describe('P0 日常零 token Mock UI 回归', () => {
       await gotoMock(page);
       await page.locator('#topContextPill').click();
       await page.locator('[data-testid="browse-entry"]', { hasText: 'README.md' }).click();
-      const header = page.locator('#fileBrowseBody .cm-header').first();
+      const header = page.locator('#fileBrowseBody .msg-body h1').first();
       await expect(header).toContainText('CCM playground workspace');
       const ratio = await effectiveContrast(header);
       expect(ratio, `${scheme} markdown 标题对比度 ${ratio.toFixed(2)}`).toBeGreaterThanOrEqual(4.5);
-      const link = page.locator('#fileBrowseBody .cm-link').first();
+      const link = page.locator('#fileBrowseBody .msg-body a').first();
       await expect(link).toContainText('docs');
       const linkRatio = await effectiveContrast(link);
       expect(linkRatio, `${scheme} markdown 链接对比度 ${linkRatio.toFixed(2)}`).toBeGreaterThanOrEqual(4.5);

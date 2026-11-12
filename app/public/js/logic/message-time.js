@@ -87,6 +87,28 @@ export function formatSessionRowTime(ts, { now = Date.now() } = {}) {
   return `${formatCalendarDayLabel(ts, now)} ${formatClockHm(ts)}`;
 }
 
+// 操作栏末尾的紧凑时间戳。完整值进 title（手机没有 hover），这里只保证一行放得下。
+export function formatActionBarTs(ts, { now = Date.now() } = {}) {
+  const ms = normalizeMessageTs(ts);
+  if (ms == null) return '';
+  const d = new Date(ms);
+  const sameYear = d.getFullYear() === new Date(now).getFullYear();
+  const ymd = `${sameYear ? '' : `${d.getFullYear()}-`}${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}`;
+  return `${ymd} ${formatClockHm(ms)}`;
+}
+
+// 文件列表的修改时间：今天带时分（刚改过的一眼看得出来），昨天/更早只给日期——
+// 一行只有 390px 宽，日期就够区分「刚动过」和「很久没动」。
+export function formatBrowseTime(ms, { now = Date.now() } = {}) {
+  const ts = normalizeMessageTs(ms);
+  if (ts == null) return '';
+  if (isSameLocalDay(ts, now)) return `${t('今天')} ${formatClockHm(ts)}`;
+  const y = new Date(now);
+  y.setDate(y.getDate() - 1);
+  if (isSameLocalDay(ts, y.getTime())) return t('昨天');
+  return formatCalendarDayLabel(ts, now);
+}
+
 // marker → 可直接 textContent 的文案。day 行走微信形态单行「今天 09:00」。
 // 若将来要「日期行只写日期、时间另起一行」，只改这里的模板串，判定层零改动。
 export function formatMessageTimeMarker(marker, { now = Date.now() } = {}) {

@@ -197,6 +197,8 @@ import { createModelIntent } from './app/model-intent.js';
 import { createGateFocusController } from './app/focus-layers.js';
 import { createConsoleModal } from './app/console-modal.js';
 import { createServiceStatus } from './app/service-status.js';
+import { createMessageActions } from './app/message-actions.js';
+import { createDrawioEditorBridge } from './app/drawio-editor.js';
 import { createStatuslineView } from './app/statusline-view.js';
 import { createEmptySurfaces, starterPromptsHtml, wireStarterPrompts } from './app/empty-surfaces.js';
 import { createSessionSidebar } from './app/session-sidebar.js';
@@ -378,6 +380,8 @@ import { createKeyboardInset } from './app/keyboard-inset.js';
   const fileBrowseTools = $('fileBrowseTools'), fileBrowseBack = $('fileBrowseBack'),
         fileBrowsePath = $('fileBrowsePath'),
         fileBrowseBody = $('fileBrowseBody'), fileBrowseEdit = $('fileBrowseEdit'),
+        fileBrowseSortGroup = $('fileBrowseSortGroup'), fileBrowseSortKey = $('fileBrowseSortKey'),
+        fileBrowseSortDir = $('fileBrowseSortDir'),
         fileBrowseDownload = $('fileBrowseDownload'),
         fileBrowseSave = $('fileBrowseSave'), fileBrowseCancelEdit = $('fileBrowseCancelEdit'),
         fileBrowseSaveError = $('fileBrowseSaveError');
@@ -483,7 +487,6 @@ import { createKeyboardInset } from './app/keyboard-inset.js';
   let cwdDefaultModel = '';             // 当前 cwd 的 CLI 默认模型（instances.defaultModel，服务端 scout 探得）：
                                         // currentModel 空时默认磁贴显它而非笼统「沿用当前」；只影响标签、不影响发送
   let currentGatewaySuffix = '';        // 保存第三方网关的特殊后缀（如 [1m]）进行无感适配，保持 Web 选项名称干净
-  let activeSpeechBtn = null;           // 语音朗读当前播放的按钮
   let currentSessionIdForCopy = null;   // 当前查看会话完整 id（供 pillSession 点按复制）
   let modelsList = [];                   // 最近一次 models 事件的原始候选（含 SDK 的 supportedEffortLevels），驱动 effort 下拉
   const streams = new Map();
@@ -708,6 +711,7 @@ import { createKeyboardInset } from './app/keyboard-inset.js';
       fileBrowseSave,
       fileBrowseCancelEdit,
       fileBrowseSaveError,
+      fileBrowseSortGroup, fileBrowseSortKey, fileBrowseSortDir,
       gitChangesTools,
       gitChangesBranch,
       gitChangesRefresh,
@@ -2905,7 +2909,7 @@ import { createKeyboardInset } from './app/keyboard-inset.js';
           if (wrap) matchedBubble.appendChild(wrap);
         }
         if (p.text && !matchedBubble.querySelector('[data-copy-action]')) {
-          appendCopyAction(matchedBubble, () => p.text, 'right');
+          appendCopyAction(matchedBubble, () => p.text, 'right', null, ev?.ts);
         }
         // 占位转正时补上服务端权威 uuid（占位创建时还没有 uuid）。
         if (p.uuid && !matchedBubble.dataset.uuid) {
@@ -2929,7 +2933,7 @@ import { createKeyboardInset } from './app/keyboard-inset.js';
       if (Array.isArray(p.attachments) && p.attachments.length) {
         bubble.appendChild(buildAttachmentWrap(p.attachments, Boolean(p.text)));
       }
-      if (p.text) appendCopyAction(bubble, () => p.text, 'right');
+      if (p.text) appendCopyAction(bubble, () => p.text, 'right', null, ev?.ts);
       if (p.origin === 'auto-continuation') tagAutoContinueBubble(bubble); // 额度墙到点续跑发的，不是用户打的
       messageTimeline.appendWithTime(bubble, ev?.ts, 'user');
       scrollBottom(true);
@@ -3170,7 +3174,7 @@ import { createKeyboardInset } from './app/keyboard-inset.js';
       const wrap = el(`<div class="msg-frame msg-body px-0.5" data-testid="assistant-message"></div>`);
       wrap.dataset.topLevel = '1'; // 未读角标锚点定位用：仅主链 assistant 流式气泡（子agent走 getSubagentStream，不经过这里）
       messageTimeline.appendWithTime(wrap, ts, 'assistant');
-      s = { el: wrap, raw: '', done: false };
+      s = { el: wrap, raw: '', done: false, ts };
       streams.set(key, s);
       scrollBottom();
     }
@@ -3188,7 +3192,7 @@ import { createKeyboardInset } from './app/keyboard-inset.js';
       // try 与全文件其余 hljs 调用点一致（2026-08-03 F5）：高亮抛错不该打断复制按钮注入——高亮失败只该丢高亮。
       s.el.querySelectorAll('pre code').forEach(b => { try { hljs.highlightElement(b); } catch { /* 高亮失败不影响显示 */ } });
       injectCodeCopyButtons(s.el);
-      appendCopyAction(s.el, () => s.raw, 'left');
+      appendCopyAction(s.el, () => s.raw, 'left', null, s.ts);
       s.el.style.transition = 'opacity .1s';
       s.el.style.opacity = '0.4';
       requestAnimationFrame(() => {
@@ -5195,8 +5199,10 @@ import { createKeyboardInset } from './app/keyboard-inset.js';
   });
 
   // ---- 项目文件只读浏览：传输回调、分页状态和 DOM 渲染由独立 controller 管理 ----
+  let drawioEditor = null; // 先声明：控制器只拿 getter，等它构造完再建桥（两者互相回调）
   const fileBrowser = createFileBrowser(appContext, {
     baseName,
+    getDrawioEditor: () => drawioEditor,
     confirmDiscardEdit: () => appConfirm({
       title: t('放弃未保存的修改？'),
       body: t('编辑内容尚未保存，离开后将丢失。'),
@@ -5205,6 +5211,22 @@ import { createKeyboardInset } from './app/keyboard-inset.js';
     }),
     createElement: el,
     haptic,
+    renderMarkdown: render,
+    // 预览器输出的第二道净化（mermaid SVG）：只禁脚本与内联事件，保留样式/标签结构。
+    sanitizeHtml: html => DOMPurify.sanitize(html, {
+      FORBID_TAGS: ['script'],
+      FORBID_ATTR: ['onerror', 'onload', 'onclick'],
+    }),
+  });
+  drawioEditor = createDrawioEditorBridge({
+    documentRef: document,
+    socket,
+    addBar,
+    haptic,
+    // 窄屏不给内联编辑器：drawio 的菜单/形状面板在 390px 下会挤成一团，改用源码编辑。
+    widthCheck: () => window.matchMedia('(min-width: 768px)').matches,
+    onSaved: (xml, hash) => fileBrowser.applyDrawioSave(xml, hash),
+    onExit: () => fileBrowser.applyDrawioExit(),
   });
   const gitChanges = createGitChangesPanel(appContext, {
     createElement: el,
@@ -6335,7 +6357,7 @@ import { createKeyboardInset } from './app/keyboard-inset.js';
       // 终端 / 桌面端里贴进对话的图（transcript 里的图片块，不是 CCM 上传的附件）
       const pasted = isUser ? transcriptImages.render(msg.images, imageScope) : null;
       if (pasted) bubble.appendChild(pasted);
-      if (msg.content) appendCopyAction(bubble, () => msg.content || '', isUser ? 'right' : 'left', msg.uuid);
+      if (msg.content) appendCopyAction(bubble, () => msg.content || '', isUser ? 'right' : 'left', msg.uuid, msg.timestamp);
       if (isUser && msg.origin === 'auto-continuation') tagAutoContinueBubble(bubble); // 与 live 的 user_message 同一判据
       bubble.dataset.topLevel = '1'; // 未读角标锚点定位用（jumpToUnreadAnchor）：仅主链用户消息/assistant文字回复计入，子agent/侧链在上面已提前 return
       if (msg.uuid) bubble.dataset.uuid = msg.uuid;
@@ -6764,46 +6786,6 @@ import { createKeyboardInset } from './app/keyboard-inset.js';
     inputEl?.focus();
   }
 
-  // 复制按钮的内容。尺寸由调用方写字面量类名（Tailwind 靠扫源码产出 utility）：代码块 w-3、消息操作栏 w-3.5。
-  function copyBtnInnerHtml(sizeClasses) {
-    return `
-      <svg class="${sizeClasses}" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
-        <path stroke-linecap="round" stroke-linejoin="round" d="M8 5H6a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2v-1M8 5a2 2 0 002 2h2a2 2 0 002-2M8 5a2 2 0 012-2h2a2 2 0 012 2m0 0h2a2 2 0 012 2v3m2 4H10m0 0l3-3m-3 3l3 3" />
-      </svg>
-      <span>${t('复制')}</span>
-    `;
-  }
-
-  function wireCopyFeedback(btn, getText, { stopPropagation = false } = {}) {
-    btn.onclick = async (e) => {
-      if (stopPropagation) e.stopPropagation();
-      haptic('tap');
-      const ok = await copyText(getText());
-      const span = btn.querySelector('span');
-      if (span) span.textContent = ok ? t('已复制') : t('失败');
-      setTimeout(() => { if (span) span.textContent = t('复制'); }, 1500);
-    };
-  }
-
-  // E18: 为代码块注入复制按钮（per-block，hover 时浮现）
-  function injectCodeCopyButtons(container) {
-    container.querySelectorAll('pre').forEach(pre => {
-      if (pre.closest('.code-block-wrap')) return; // 已注入跳过
-      const wrap = document.createElement('div');
-      wrap.className = 'code-block-wrap';
-      pre.parentNode.insertBefore(wrap, pre);
-      wrap.appendChild(pre);
-      const btn = el(`<button class="code-copy-btn" title="${t('复制代码')}">${copyBtnInnerHtml('w-3 h-3')}</button>`);
-      wireCopyFeedback(btn, () => {
-        const code = pre.querySelector('code');
-        return code ? code.textContent : pre.textContent;
-      }, { stopPropagation: true });
-      wrap.appendChild(btn);
-    });
-  }
-
-  // ---- 工具函数 ----
-
   // E18：带降级的剪贴板写入（HTTPS/安全上下文用 navigator.clipboard；局域网 HTTP 降级 execCommand）
   async function copyText(text) {
     try {
@@ -6829,134 +6811,30 @@ import { createKeyboardInset } from './app/keyboard-inset.js';
   function setAppBadgeSafe(n) { navigator.setAppBadge?.(n).catch(() => {}); }
   function clearAppBadgeSafe() { navigator.clearAppBadge?.().catch(() => {}); }
 
+  // 消息操作栏（复制 / 朗读 / 分叉 / 回填 / 时间戳）已迁到 app/message-actions.js。
+  // appendCopyAction 的第 5 个参数是信封 / transcript 的原始 ts；缺了就不渲染时间戳。
+  const { appendCopyAction, copyBtnInnerHtml, wireCopyFeedback } = createMessageActions({
+    el, haptic, copyText, addBar,
+    getInputEl: () => inputEl,
+    requestSessionFork: bubble => requestSessionFork(bubble),
+    scrollBottom: force => scrollBottom(force),
+  });
 
-
-  function speakIdleHtml() {
-    return `
-      <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
-        <path stroke-linecap="round" stroke-linejoin="round" d="M15.536 8.464a5 5 0 010 7.072m2.828-9.9a9 9 0 010 12.728M5.586 15H4a1 1 0 01-1-1v-4a1 1 0 011-1h1.586l4.707-4.707C10.923 3.663 12 4.109 12 5v14c0 .891-1.077 1.337-1.707.707L5.586 15z" />
-      </svg>
-      <span>${t('朗读')}</span>
-    `;
-  }
-
-  function resetSpeakBtn(btn) {
-    btn.innerHTML = speakIdleHtml();
-  }
-
-  // E18: Redesigned premium utility row under each message block with copy, speak (TTS), and edit capabilities
-  // anchorUuid：这条气泡自己的权威 uuid。缺了就不挂需要锚点的入口（见下方 align==='left' 分支）。
-  function appendCopyAction(container, getText, align, anchorUuid) {
-    if (!getText()) return;   // Empty messages have no action bar
-    
-    // For User messages (aligned to the right), render a single clean copy icon button aligned to the right
-    if (align === 'right') {
-      const row = el(`<div class="mt-1 text-right msg-action-bar justify-end"></div>`);
-      const btn = el(`<button class="msg-action-btn hit-44" title="${t('复制消息')}">${copyBtnInnerHtml('w-3.5 h-3.5')}</button>`);
-      wireCopyFeedback(btn, getText);
-      row.appendChild(btn);
-      // UX-012 / #362：填入输入框放在用户气泡；只回填原文，不 rewind / 不改历史
-      const rewrite = el(`
-        <button class="msg-action-btn hit-44" title="${t('将原文填入输入框（不回退历史）')}">
-          <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
-            <path stroke-linecap="round" stroke-linejoin="round" d="M15.232 5.232l3.536 3.536m-2.036-5.036a2.5 2.5 0 113.536 3.536L6.5 21.036H3v-3.572L16.732 3.732z" />
-          </svg>
-          <span>${t('填入输入框')}</span>
-        </button>
-      `);
-      rewrite.onclick = () => {
-        haptic('tap');
-        const val = getText();
-        if (inputEl) {
-          inputEl.value = val;
-          inputEl.focus();
-          inputEl.dispatchEvent(new Event('input'));
-          scrollBottom(true);
-        }
-      };
-      row.appendChild(rewrite);
-      container.appendChild(row);
-      return;
-    }
-
-    // For Assistant messages (aligned to the left), render a beautiful multi-action bar
-    const bar = el(`<div class="msg-action-bar justify-start"></div>`);
-    
-    // 1. Copy Button
-    const copyBtn = el(`<button class="msg-action-btn" title="${t('复制消息')}">${copyBtnInnerHtml('w-3.5 h-3.5')}</button>`);
-    wireCopyFeedback(copyBtn, getText);
-    bar.appendChild(copyBtn);
-
-    // 2. Speak (TTS) Button using browser-native Web Speech API
-    const speakBtn = el(`<button class="msg-action-btn" title="${t('语音朗读')}">${speakIdleHtml()}</button>`);
-    speakBtn.onclick = () => {
-      // 特性检测：部分移动端浏览器/内嵌 WebView 不支持 Web Speech API，speechSynthesis 为 undefined
-      // 时直接访问 .speaking 会抛未捕获 TypeError（同 copyText 的 navigator.clipboard && 检测风格）。
-      if (typeof window.speechSynthesis === 'undefined' || typeof SpeechSynthesisUtterance === 'undefined') {
-        addBar(t('此设备不支持语音朗读'), 'text-info');
-        return;
-      }
-      if (window.speechSynthesis.speaking && activeSpeechBtn === speakBtn) {
-        window.speechSynthesis.cancel();
-        resetSpeakBtn(speakBtn);
-        activeSpeechBtn = null;
-        return;
-      }
-      
-      if (window.speechSynthesis.speaking) {
-        window.speechSynthesis.cancel();
-        if (activeSpeechBtn) resetSpeakBtn(activeSpeechBtn);
-      }
-
-      haptic('tap');
-      const text = getText();
-      // Remove basic markdown formatting for cleaner speech synthesis output
-      const cleanText = text.replace(/[*_`#]/g, '').replace(/\[([^\]]+)\]\([^)]+\)/g, '$1').trim();
-      if (!cleanText) return;
-      
-      const utterance = new SpeechSynthesisUtterance(cleanText);
-      utterance.onend = () => {
-        resetSpeakBtn(speakBtn);
-        if (activeSpeechBtn === speakBtn) activeSpeechBtn = null;
-      };
-      
-      speakBtn.innerHTML = `
-        <svg class="w-3.5 h-3.5 text-danger animate-pulse" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
-          <path stroke-linecap="round" stroke-linejoin="round" d="M18.364 18.364A9 9 0 005.636 5.636m12.728 12.728A9 9 0 015.636 5.636m12.728 12.728L5.636 5.636" />
-        </svg>
-        <span class="text-danger font-semibold">${t('停止')}</span>
-      `;
-      activeSpeechBtn = speakBtn;
-      window.speechSynthesis.speak(utterance);
-    };
-    bar.appendChild(speakBtn);
-
-    // 对话轴分叉的可见入口。对齐 Claude Desktop 1.52386.6——它把「Fork from here」放在
-    // assistant 消息的操作栏里，与复制/朗读同排。2026-10-26 起它是唯一入口（气泡长按还给了系统选字，
-    // 见 requestSessionFork 头注）。
-    //
-    // 【为什么判 anchorUuid】没有锚点就分叉不了（requestSessionFork 开头直接 return）。
-    // 流式气泡由 getStream 建、不带 dataset.uuid，旧 transcript 里也有缺 uuid 的条目——
-    // 那两档摆出按钮就是摆一个点了必然失败的东西。「复制」不需要锚点，所以它照常在。
-    if (anchorUuid) {
-      const forkBtn = el(`
-        <button class="msg-action-btn" data-testid="fork-action" title="${t('从这里分叉')}">
-          <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
-            <path stroke-linecap="round" stroke-linejoin="round" d="M6 3v12m0 0a3 3 0 103 3 3 3 0 00-3-3zm0-12a3 3 0 110 6 3 3 0 010-6zm12 0a3 3 0 100 6 3 3 0 000-6zm0 6c0 6-6 3-6 9" />
-          </svg>
-          <span>${t('分叉')}</span>
-        </button>
-      `);
-      // 确认框在 requestSessionFork 里，haptic 同理——按钮可见不等于一键执行。
-      // uuid 在点击时由该函数从 container.dataset 读，不用这里的 anchorUuid：
-      // 气泡的 dataset 才是权威值，且历史回显路径是先挂操作栏、后补 uuid。
-      forkBtn.onclick = () => requestSessionFork(container);
-      bar.appendChild(forkBtn);
-    }
-
-    // UX-012 / #362：编辑已迁到用户气泡「填入输入框」
-
-    container.appendChild(bar);
+  // E18: 为代码块注入复制按钮（per-block，hover 时浮现）
+  function injectCodeCopyButtons(container) {
+    container.querySelectorAll('pre').forEach(pre => {
+      if (pre.closest('.code-block-wrap')) return; // 已注入跳过
+      const wrap = document.createElement('div');
+      wrap.className = 'code-block-wrap';
+      pre.parentNode.insertBefore(wrap, pre);
+      wrap.appendChild(pre);
+      const btn = el(`<button class="code-copy-btn" title="${t('复制代码')}">${copyBtnInnerHtml('w-3 h-3')}</button>`);
+      wireCopyFeedback(btn, () => {
+        const code = pre.querySelector('code');
+        return code ? code.textContent : pre.textContent;
+      }, { stopPropagation: true });
+      wrap.appendChild(btn);
+    });
   }
 
   // 长用户文本折叠（live user_message、离线乐观占位符、历史回显共用）。
