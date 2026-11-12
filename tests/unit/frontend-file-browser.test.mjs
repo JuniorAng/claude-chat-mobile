@@ -27,7 +27,19 @@ function fakeEl(tag = 'div') {
     append(...nodes) { nodes.forEach(n => el.children.push(n)); },
     setAttribute(name, value) { attrs.set(name, String(value)); if (name === 'class') el.className = String(value); },
     getAttribute(name) { return attrs.has(name) ? attrs.get(name) : null; },
-    querySelector() { return null; },
+    querySelector(sel) {
+      const m = /^\[data-testid="(.+)"\]$/.exec(sel || '');
+      if (!m) return null;
+      const walk = node => {
+        for (const child of node.children || []) {
+          if (child.getAttribute?.('data-testid') === m[1]) return child;
+          const hit = walk(child);
+          if (hit) return hit;
+        }
+        return null;
+      };
+      return walk(el);
+    },
     querySelectorAll() { return []; },
     set innerHTML(_v) { el.html = _v; el.children = []; },
     get innerHTML() { return el.html; },
@@ -332,4 +344,29 @@ test('预览 A 之后切到 B：previewKind 复位，B 不被 A 的预览器接�
   await new Promise(setImmediate);
   assert.equal(dom.fileBrowseBody.children.some(c => c.tagName === 'IFRAME'), false,
     '切到 .js 后仍挂着上一个文件的 HTML 预览');
+});
+
+test('notes.mmd 渲染成 SVG；渲染失败回源码并说明原因', async () => {
+  const { ctl, dom, head, pending, rowNamed } = harness({ sanitizeHtml: html => html });
+  globalThis.mermaid = {
+    initialize() {},
+    async render(_id, src) { if (src.includes('BOOM')) throw new Error('Parse error'); return { svg: `<svg data-testid="mermaid-svg">${src}</svg>` }; },
+  };
+  try {
+    ctl.open('/w');
+    pending('browse:list')[0].ack({ ok: true, truncated: false, totalCount: 1,
+      entries: [{ name: 'notes.mmd', kind: 'file', size: 16, mtime: 1 }] });
+    rowNamed('notes.mmd').onclick();
+    for (const script of head.children) script.onload();
+    pending('browse:read')[0].ack({ ok: true, content: 'graph TD; A-->B', bytesRead: 16, truncated: false, totalSize: 16, contentHash: 'h' });
+    await new Promise(setImmediate);
+    assert.match(dom.fileBrowseBody.children.at(-1).html, /mermaid-svg/, '成功路径没有渲染 SVG');
+
+    globalThis.mermaid.render = async () => { throw new Error('Parse error'); };
+    await ctl.back();
+    rowNamed('notes.mmd').onclick();
+    pending('browse:read')[1].ack({ ok: true, content: 'BOOM', bytesRead: 4, truncated: false, totalSize: 4, contentHash: 'h2' });
+    await new Promise(setImmediate);
+    assert.ok(dom.fileBrowseBody.querySelector('[data-testid="file-preview-fallback"]'), '失败路径没有回源码');
+  } finally { delete globalThis.mermaid; }
 });

@@ -63,6 +63,7 @@ export function createFileBrowser(context, {
   createElement,
   haptic = () => {},
   renderMarkdown = null, // 与消息正文同一份 marked + DOMPurify，见 renderContent 的 markdown 预览
+  sanitizeHtml = null,   // 预览器输出的第二道净化（mermaid/drawio）；未注入时预览回源码（fail closed）
 } = {}) {
   const dom = context.dom;
   const documentRef = context.dependencies.document || globalThis.document;
@@ -87,6 +88,8 @@ export function createFileBrowser(context, {
   let previewKind = null; // null | 'markdown' | 'html' | 'mermaid' | 'drawio'；编辑/保存后回到同一种预览
   let codeMirrorLoad = null; // CM 脚本的按需加载，见 loadCodeMirror
   let codeMirrorReady = false; // 整包（核心＋全部 mode）都执行完才算；核心先执行，全局在不等于 mode 到齐
+  let mermaidLoad = null;   // mermaid 脚本的按需加载（同 CodeMirror 的单例模式）
+  let mermaidSeq = 0;       // mermaid.render 要唯一 DOM id
   let targetLine = null;   // 文件链接带的行号，定位到后清掉
   let autoPages = 0;       // 为了够到 targetLine 已自动续读的页数
 
@@ -428,12 +431,78 @@ export function createFileBrowser(context, {
     const ext = dot < 0 ? '' : name.slice(dot + 1).toLowerCase();
     if (ext === 'html' || ext === 'htm') return 'html';
     if (ext === 'md' || ext === 'markdown' || ext === 'mdx') return 'markdown';
+    if (ext === 'mmd' || ext === 'mermaid') return 'mermaid';
     return null;
   }
 
   function renderPreview() {
     if (previewKind === 'html') renderHtmlPreview();
+    else if (previewKind === 'mermaid') renderMermaidPreview();
     else renderMarkdownPreview();
+  }
+
+  function loadMermaid() {
+    if (typeof globalThis.mermaid !== 'undefined') return Promise.resolve(globalThis.mermaid);
+    if (!mermaidLoad) {
+      const version = new URL(import.meta.url).searchParams.get('v');
+      mermaidLoad = new Promise((resolve, reject) => {
+        const script = documentRef.createElement('script');
+        script.async = false;
+        script.onload = resolve;
+        script.onerror = reject;
+        script.src = `/vendor/mermaid.min.js${version ? `?v=${version}` : ''}`;
+        documentRef.head.appendChild(script);
+      }).then(() => globalThis.mermaid || null, () => { mermaidLoad = null; return null; });
+    }
+    return mermaidLoad;
+  }
+
+  // .mmd / .mermaid 渲染成 SVG。securityLevel 'strict' 是 mermaid 自己的净化，输出再经注入的
+  // sanitizeHtml 洗一遍；没注入就回源码（fail closed），绝不直接插未净化的 SVG。
+  async function renderMermaidPreview() {
+    const mermaid = await loadMermaid();
+    const stillMermaid = () => mode === 'content' && previewKind === 'mermaid';
+    if (!stillMermaid()) return;
+    if (!mermaid || typeof sanitizeHtml !== 'function') {
+      renderSourceFallback(t('渲染失败，已显示源码'));
+      return;
+    }
+    mermaid.initialize({
+      startOnLoad: false,
+      securityLevel: 'strict',
+      theme: documentRef.documentElement?.dataset?.theme === 'dark' ? 'dark' : 'default',
+    });
+    try {
+      const { svg } = await mermaid.render(`ccm-mermaid-${++mermaidSeq}`, contentText);
+      if (!stillMermaid()) return;
+      const holder = documentRef.createElement('div');
+      holder.className = 'p-4 overflow-auto';
+      holder.innerHTML = sanitizeHtml(svg);
+      dom.fileBrowseBody.innerHTML = '';
+      cmInstance = null;
+      dom.fileBrowseBody.appendChild(holder);
+    } catch (err) {
+      if (!stillMermaid()) return;
+      renderSourceFallback(`${t('渲染失败，已显示源码')}：${String(err?.message || err).slice(0, 80)}`);
+    }
+  }
+
+  // 预览失败时的统一退路：一行原因 + 源码。绝不留空白面板。
+  function renderSourceFallback(reason) {
+    if (!dom.fileBrowseBody) return;
+    dom.fileBrowseBody.innerHTML = '';
+    cmInstance = null;
+    previewKind = null;
+    const notice = documentRef.createElement('div');
+    notice.className = 'px-4 py-1.5 text-[10px] text-ink-faint border-b border-line-soft';
+    notice.setAttribute('data-testid', 'file-preview-fallback');
+    notice.textContent = reason;
+    const pre = documentRef.createElement('pre');
+    pre.className = 'p-4 text-[11px] leading-relaxed font-mono text-ink whitespace-pre-wrap break-words';
+    pre.textContent = contentText;
+    dom.fileBrowseBody.append(notice, pre);
+    editOnDemand = Boolean(baseHash) && typeof CodeMirror !== 'undefined';
+    syncEditButtons();
   }
 
   // HTML 只进 iframe 的 srcdoc，绝不进父页 innerHTML。sandbox 留空 = 无 allow-scripts、无 allow-same-origin：

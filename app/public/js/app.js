@@ -5209,6 +5209,11 @@ import { createKeyboardInset } from './app/keyboard-inset.js';
     createElement: el,
     haptic,
     renderMarkdown: render,
+    // 预览器输出的第二道净化（mermaid SVG）：只禁脚本与内联事件，保留样式/标签结构。
+    sanitizeHtml: html => DOMPurify.sanitize(html, {
+      FORBID_TAGS: ['script'],
+      FORBID_ATTR: ['onerror', 'onload', 'onclick'],
+    }),
   });
   const gitChanges = createGitChangesPanel(appContext, {
     createElement: el,

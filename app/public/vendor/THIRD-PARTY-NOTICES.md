@@ -66,6 +66,14 @@ project's own code is licensed under Apache-2.0 (see root `LICENSE`); that does 
 - 许可全文 / Full text: https://openfontlicense.org
 - 来源 / Source: https://github.com/adobe-fonts/source-serif
 
+## mermaid — `mermaid.min.js`
+
+- 版本 / Version: 11.12.0
+- 版权 / Copyright: © 2014–2025 Knut Sveidqvist and contributors
+- 许可 / License: MIT (SPDX: `MIT`)
+- 来源 / Source: https://github.com/mermaid-js/mermaid（npm 包 `mermaid@11.12.0` 的 `dist/mermaid.min.js`）
+- 说明 / Notes: 仅在打开 `.mmd` / `.mermaid` 文件时按需加载；渲染走 `securityLevel: 'strict'`，输出再经 DOMPurify。
+
 ---
 
 ## 许可证全文 / Full license texts
