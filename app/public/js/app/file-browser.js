@@ -1,6 +1,8 @@
 /* global CodeMirror */
 import { t } from '../i18n.js';
 import { lineSpan } from '../logic/file-links.js';
+import { sortBrowseEntries } from '../logic/file-sort.js';
+import { formatBrowseTime } from '../logic/message-time.js';
 import { showPanelMessage } from './panel-message.js';
 
 const ICONS = { dir: '📁', file: '📄', symlink: '🔗' };
@@ -60,6 +62,7 @@ export function createFileBrowser(context, {
   confirmDiscardEdit = async () => true,
   createElement,
   haptic = () => {},
+  renderMarkdown = null, // 与消息正文同一份 marked + DOMPurify，见 renderContent 的 markdown 预览
 } = {}) {
   const dom = context.dom;
   const documentRef = context.dependencies.document || globalThis.document;
@@ -71,6 +74,8 @@ export function createFileBrowser(context, {
   let listOffset = 0;
   let listTruncated = false;
   let listTotal = 0;
+  let sortKey = 'name';   // 'name' | 'mtime' | 'size'；name 模式的顺序就是服务端顺序（分页游标依赖它）
+  let sortDir = 'asc';
   let contentText = '';
   let contentOffset = 0;
   let contentReadGen = 0; // 每发一次 browse:read 加一，见 fetchContentPage
@@ -79,6 +84,7 @@ export function createFileBrowser(context, {
   let editMode = 'view';   // 'view' | 'editing'；离开 content 模式（back/loadContent 新文件）即复位
   let baseHash = null;     // files:write 的冲突基线——来自最近一次 browse:read 或 files:write 成功后的 contentHash
   let editOnDemand = false; // 行多的纯文本：查看留在 <pre>，点「编辑」才挂 CM（验收 O103，见 renderContent）
+  let markdownPreview = false; // content 视图当前是渲染后的 markdown（CM 未挂载），编辑/保存后回到这里
   let codeMirrorLoad = null; // CM 脚本的按需加载，见 loadCodeMirror
   let codeMirrorReady = false; // 整包（核心＋全部 mode）都执行完才算；核心先执行，全局在不等于 mode 到齐
   let targetLine = null;   // 文件链接带的行号，定位到后清掉
@@ -155,7 +161,10 @@ export function createFileBrowser(context, {
       showMessage(t('（空目录）'));
       return;
     }
-    for (const entry of listEntries) {
+    // 排序只作用于已加载条目；服务端顺序仍按名字分页（见 logic/file-sort.js 的 shortcut 注释）。
+    const now = Date.now();
+    const ordered = sortBrowseEntries(listEntries, { key: sortKey, dir: sortDir });
+    for (const entry of ordered) {
       const row = createElement('<button class="w-full flex items-center gap-2 px-4 py-2.5 border-b border-line-soft text-left hover:bg-sunk/30 active:opacity-70" data-testid="browse-entry"></button>');
       const icon = createElement('<span class="shrink-0 w-5 text-center"></span>');
       icon.textContent = ICONS[entry.kind] || '❔';
@@ -163,10 +172,15 @@ export function createFileBrowser(context, {
       const name = createElement('<span class="flex-1 min-w-0 truncate text-xs text-ink"></span>');
       name.textContent = entry.name;
       row.appendChild(name);
-      if (entry.kind === 'file') {
-        const size = createElement('<span class="shrink-0 text-[10px] text-ink-faint"></span>');
-        size.textContent = formatFileSize(entry.size);
-        row.appendChild(size);
+      // 名称模式维持现状（文件显示大小、目录不显示）；按修改时间排序时两行都显示时间。
+      const meta = entry.kind === 'dir'
+        ? (sortKey === 'mtime' ? formatBrowseTime(entry.mtime, { now }) : '')
+        : [formatFileSize(entry.size), sortKey === 'mtime' ? formatBrowseTime(entry.mtime, { now }) : '']
+          .filter(Boolean).join(' · ');
+      if (meta) {
+        const cell = createElement('<span class="shrink-0 text-[10px] text-ink-faint"></span>');
+        cell.textContent = meta;
+        row.appendChild(cell);
       }
       row.onclick = () => {
         haptic('tap');
@@ -322,7 +336,22 @@ export function createFileBrowser(context, {
 
   // 三态互斥：可编辑且未在编辑 → 编辑；正在编辑 → 保存+取消。不可编辑（无 baseHash：截断/二进制，或分页续读过）
   // → 三个都不显，file-browse.js 只读铁律的既有语义在这些场景下原样保留。
+  // 排序控件只在列表模式可见；内容视图已经有编辑/保存/下载，再挤两个控件会把路径压没。
+  function syncSortControls() {
+    const listMode = mode === 'list';
+    dom.fileBrowseSortGroup?.classList.toggle('hidden', !listMode);
+    if (!listMode) return;
+    if (dom.fileBrowseSortKey) dom.fileBrowseSortKey.value = sortKey;
+    if (dom.fileBrowseSortDir) {
+      dom.fileBrowseSortDir.textContent = sortDir === 'asc' ? '↑' : '↓';
+      const label = sortDir === 'asc' ? t('升序') : t('降序');
+      dom.fileBrowseSortDir.setAttribute?.('aria-label', label);
+      dom.fileBrowseSortDir.title = label;
+    }
+  }
+
   function syncEditButtons() {
+    syncSortControls();
     const editable = Boolean(baseHash) && (Boolean(cmInstance) || editOnDemand);
     dom.fileBrowseEdit?.classList.toggle('hidden', !(editable && editMode === 'view'));
     dom.fileBrowseSave?.classList.toggle('hidden', editMode !== 'editing');
@@ -333,7 +362,7 @@ export function createFileBrowser(context, {
   function enterEditMode() {
     if (!cmInstance && editOnDemand && baseHash) {
       dom.fileBrowseBody.innerHTML = '';
-      mountCodeMirror('text/plain');
+      mountCodeMirror(cmModeForFileName(fileName) || 'text/plain');
     }
     if (!cmInstance || editMode !== 'view') return;
     haptic('tap');
@@ -350,7 +379,8 @@ export function createFileBrowser(context, {
     cmInstance?.setValue(contentText); // 撤销未保存的改动，回到加载/上次保存成功时的内容
     editMode = 'view';
     hideSaveError();
-    cmInstance?.setOption('readOnly', 'nocursor');
+    if (markdownPreview) renderMarkdownPreview();
+    else cmInstance?.setOption('readOnly', 'nocursor');
     syncEditButtons();
   }
 
@@ -372,7 +402,8 @@ export function createFileBrowser(context, {
       contentText = newContent; // 基线随保存前移：取消编辑不会丢刚保存成功的内容
       baseHash = response.contentHash;
       editMode = 'view';
-      cmInstance.setOption('readOnly', 'nocursor');
+      if (markdownPreview) renderMarkdownPreview();
+      else cmInstance.setOption('readOnly', 'nocursor');
       syncEditButtons();
     });
   }
@@ -391,6 +422,18 @@ export function createFileBrowser(context, {
     });
   }
 
+  // contentText 已经过注入的 renderMarkdown（marked + DOMPurify，含消息链路那套禁 label/form/style 的配置），
+  // 直接 innerHTML 是安全的。
+  function renderMarkdownPreview() {
+    if (!dom.fileBrowseBody) return;
+    dom.fileBrowseBody.innerHTML = '';
+    cmInstance = null;
+    const article = documentRef.createElement('div');
+    article.className = 'msg-body p-4'; // 复用消息正文的排版：serif 阅读字体、标题/列表/表格/代码块样式
+    article.innerHTML = renderMarkdown(contentText);
+    dom.fileBrowseBody.appendChild(article);
+  }
+
   // 目标行放到视口上方三分之一处，上文也看得到
   function scrollBodyTo(windowY) {
     const body = dom.fileBrowseBody;
@@ -401,6 +444,7 @@ export function createFileBrowser(context, {
     if (!dom.fileBrowseBody) return;
     dom.fileBrowseBody.innerHTML = '';
     cmInstance = null;
+    markdownPreview = false;
     editMode = 'view';
     editOnDemand = false;
     baseHash = contentHash || null;
@@ -411,6 +455,16 @@ export function createFileBrowser(context, {
     // 但能不能编辑只看 baseHash：这类文件「编辑」照给，点了才挂 CM——那时的逐行建 DOM 是用户要编辑才付的，
     // 而只是看一眼的不付（验收 O103：几 KB 的 .txt 因行多不能编辑，256KB 的 .js 却能）。
     const highlighted = cmModeForFileName(fileName);
+    // markdown 一次性读全时直接渲染成 HTML（读文档不该看源码）；带行号的链接定位、截断/分页仍走源码视图，
+    // 前者要按行滚动，后者渲染半篇没有意义。点「编辑」才挂 CM 显示源码，取消/保存后回到预览。
+    if (highlighted === 'text/markdown' && typeof renderMarkdown === 'function'
+      && !targetLine && !usedPagination && !truncated) {
+      markdownPreview = true;
+      editOnDemand = Boolean(baseHash) && typeof CodeMirror !== 'undefined';
+      renderMarkdownPreview();
+      syncEditButtons();
+      return;
+    }
     const plainOk = !highlighted && contentText.split('\n').length <= PLAIN_CM_MAX_LINES;
     const mime = !usedPagination && !truncated ? (highlighted || (plainOk ? 'text/plain' : null)) : null;
     if (mime && typeof CodeMirror !== 'undefined') {
@@ -464,6 +518,7 @@ export function createFileBrowser(context, {
   // 否则上一个文件的「编辑」按钮会残留可见在列表视图里，或误挂着已失效的 baseHash。
   function resetEditState() {
     cmInstance = null;
+    markdownPreview = false;
     editMode = 'view';
     editOnDemand = false;
     baseHash = null;
@@ -501,6 +556,8 @@ export function createFileBrowser(context, {
     segments = [];
     mode = 'list';
     fileName = null;
+    sortKey = 'name';
+    sortDir = 'asc';
     resetEditState();
     loadList();
   }
@@ -540,6 +597,21 @@ export function createFileBrowser(context, {
     });
   }
 
+  if (dom.fileBrowseSortKey) {
+    dom.fileBrowseSortKey.onchange = () => {
+      sortKey = dom.fileBrowseSortKey.value;
+      haptic('tap');
+      renderList();
+    };
+  }
+  if (dom.fileBrowseSortDir) {
+    dom.fileBrowseSortDir.onclick = () => {
+      sortDir = sortDir === 'asc' ? 'desc' : 'asc';
+      haptic('tap');
+      syncSortControls();
+      renderList();
+    };
+  }
   if (dom.fileBrowseBack) dom.fileBrowseBack.onclick = back;
   if (dom.fileBrowseDownload) dom.fileBrowseDownload.onclick = download;
   if (dom.fileBrowseEdit) dom.fileBrowseEdit.onclick = enterEditMode;

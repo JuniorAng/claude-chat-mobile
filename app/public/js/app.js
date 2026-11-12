@@ -379,6 +379,8 @@ import { createKeyboardInset } from './app/keyboard-inset.js';
   const fileBrowseTools = $('fileBrowseTools'), fileBrowseBack = $('fileBrowseBack'),
         fileBrowsePath = $('fileBrowsePath'),
         fileBrowseBody = $('fileBrowseBody'), fileBrowseEdit = $('fileBrowseEdit'),
+        fileBrowseSortGroup = $('fileBrowseSortGroup'), fileBrowseSortKey = $('fileBrowseSortKey'),
+        fileBrowseSortDir = $('fileBrowseSortDir'),
         fileBrowseDownload = $('fileBrowseDownload'),
         fileBrowseSave = $('fileBrowseSave'), fileBrowseCancelEdit = $('fileBrowseCancelEdit'),
         fileBrowseSaveError = $('fileBrowseSaveError');
@@ -708,6 +710,7 @@ import { createKeyboardInset } from './app/keyboard-inset.js';
       fileBrowseSave,
       fileBrowseCancelEdit,
       fileBrowseSaveError,
+      fileBrowseSortGroup, fileBrowseSortKey, fileBrowseSortDir,
       gitChangesTools,
       gitChangesBranch,
       gitChangesRefresh,

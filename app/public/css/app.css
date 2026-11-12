@@ -580,6 +580,8 @@ body.ccm-sheet-open #messages {
   margin-top: 0.4rem;
 }
 /* 操作栏末尾的时间戳：10px、ink-faint、不可选中；margin-left:auto 推进栏尾。 */
+/* 排序控件组：.hidden 由 syncSortControls 切换，非 hidden 时必须是 flex（类里只写了 items-center）。 */
+#fileBrowseSortGroup:not(.hidden) { display: flex; }
 .msg-action-ts {
   margin-left: auto;
   padding-left: 0.5rem;
