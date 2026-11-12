@@ -591,6 +591,8 @@ body.ccm-sheet-open #messages {
   white-space: nowrap;
   user-select: none;
 }
+/* 用户气泡那行是 justify-end：再加 margin-left:auto 会把复制/回填推到最左，盖住 1×1 缩略图的点击区。 */
+.msg-action-bar.justify-end .msg-action-ts { margin-left: 0; }
 
 .msg-action-btn {
   display: inline-flex;
