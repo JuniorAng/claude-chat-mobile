@@ -70,6 +70,7 @@ export function createFileBrowser(context, {
   haptic = () => {},
   renderMarkdown = null, // 与消息正文同一份 marked + DOMPurify，见 renderContent 的 markdown 预览
   sanitizeHtml = null,   // 预览器输出的第二道净化（mermaid/drawio）；未注入时预览回源码（fail closed）
+  getDrawioEditor = () => null, // drawio 内联编辑器桥（app/drawio-editor.js）；惰性注入避免与控制器互相构造
 } = {}) {
   const dom = context.dom;
   const documentRef = context.dependencies.document || globalThis.document;
@@ -97,6 +98,7 @@ export function createFileBrowser(context, {
   let mermaidLoad = null;   // mermaid 脚本的按需加载（同 CodeMirror 的单例模式）
   let mermaidSeq = 0;       // mermaid.render 要唯一 DOM id
   let drawioViewerLoad = null; // drawio 只读 viewer 的按需加载
+  let drawioEditing = false; // 内联 drawio 编辑器是否正在接管正文区
   let targetLine = null;   // 文件链接带的行号，定位到后清掉
   let autoPages = 0;       // 为了够到 targetLine 已自动续读的页数
 
@@ -362,18 +364,51 @@ export function createFileBrowser(context, {
 
   function syncEditButtons() {
     syncSortControls();
-    const editable = Boolean(baseHash) && (Boolean(cmInstance) || editOnDemand);
+    const editable = Boolean(baseHash) && (Boolean(cmInstance) || editOnDemand) && !drawioEditing;
     dom.fileBrowseEdit?.classList.toggle('hidden', !(editable && editMode === 'view'));
     dom.fileBrowseSave?.classList.toggle('hidden', editMode !== 'editing');
     dom.fileBrowseCancelEdit?.classList.toggle('hidden', editMode !== 'editing');
-    dom.fileBrowseDownload?.classList.toggle('hidden', mode !== 'content' || !fileName || editMode === 'editing');
+    dom.fileBrowseDownload?.classList.toggle('hidden', mode !== 'content' || !fileName || editMode === 'editing' || drawioEditing);
+  }
+
+  // 预览上方的一行提示（宽屏要求 / 放弃修改）。不替换正文，下一次 renderPreview 自然消失。
+  function showPreviewNotice(text, testid) {
+    if (!dom.fileBrowseBody) return;
+    const notice = documentRef.createElement('div');
+    notice.className = 'px-4 py-1.5 text-[10px] text-ink-faint border-b border-line-soft';
+    if (testid) notice.setAttribute('data-testid', testid);
+    notice.textContent = text;
+    dom.fileBrowseBody.prepend?.(notice);
   }
 
   function enterEditMode() {
+    // .drawio：宽屏走内联 drawio 编辑器；窄屏给一句说明并退回源码编辑（不是破碎的 UI）。
+    const drawioEditor = getDrawioEditor();
+    let showWideHint = false;
+    if (previewKind === 'drawio' && drawioEditor) {
+      if (drawioEditor.widthCheck()) {
+        hideSaveError();
+        drawioEditing = true;
+        editMode = 'view';
+        drawioEditor.open({
+          host: dom.fileBrowseBody,
+          xml: contentText,
+          name: fileName,
+          baseHash,
+          cwd,
+          relPath: segments.concat(fileName).join('/'),
+        });
+        syncEditButtons();
+        return;
+      }
+      showWideHint = true;
+    }
     if (!cmInstance && editOnDemand && baseHash) {
       dom.fileBrowseBody.innerHTML = '';
       mountCodeMirror(cmModeForFileName(fileName) || 'text/plain');
     }
+    // 提示要在挂 CM 之后加：挂载会清空正文区，先加就被抹掉了。
+    if (showWideHint) showPreviewNotice(t('这个编辑器需要更宽的屏幕；已改用源码编辑'), 'drawio-needs-wide');
     if (!cmInstance || editMode !== 'view') return;
     haptic('tap');
     hideSaveError();
@@ -664,6 +699,8 @@ export function createFileBrowser(context, {
   // 离开 content 视图（回列表 / 换 cwd 重开）：清掉编辑三态与 CM 实例引用，隐藏编辑按钮组——
   // 否则上一个文件的「编辑」按钮会残留可见在列表视图里，或误挂着已失效的 baseHash。
   function resetEditState() {
+    getDrawioEditor()?.close?.();
+    drawioEditing = false;
     cmInstance = null;
     previewKind = null;
     editMode = 'view';
@@ -675,7 +712,7 @@ export function createFileBrowser(context, {
 
   // 编辑态下未保存改动才拦；view 态/无改动直接放行，不多问一句。
   async function confirmLeaveIfEditing() {
-    if (editMode !== 'editing') return true;
+    if (editMode !== 'editing' && !drawioEditing) return true;
     return confirmDiscardEdit();
   }
 
@@ -767,5 +804,25 @@ export function createFileBrowser(context, {
 
   // confirmLeaveIfEditing 外露：关闭面板与**切到「改动」tab**都要先过这道未保存确认，
   // 否则切个 tab 就把用户没保存的编辑静默丢了。
-  return { back, open, openTarget, confirmLeaveIfEditing, stopMedia };
+  // drawio 编辑器的保存/退出回执（由 app.js 注入的桥回调）。
+  function applyDrawioSave(xml, contentHash) {
+    if (!drawioEditing) return;
+    drawioEditing = false;
+    contentText = xml;
+    baseHash = contentHash || baseHash;
+    editMode = 'view';
+    hideSaveError();
+    renderPreview();
+    syncEditButtons();
+  }
+  function applyDrawioExit() {
+    if (!drawioEditing) return;
+    drawioEditing = false;
+    editMode = 'view';
+    renderPreview();
+    showPreviewNotice(t('已放弃未保存的修改'), 'drawio-edit-exit');
+    syncEditButtons();
+  }
+
+  return { back, open, openTarget, confirmLeaveIfEditing, stopMedia, applyDrawioSave, applyDrawioExit };
 }

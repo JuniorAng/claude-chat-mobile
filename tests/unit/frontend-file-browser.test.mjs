@@ -25,6 +25,7 @@ function fakeEl(tag = 'div') {
     children: [],
     appendChild(child) { el.children.push(child); return child; },
     append(...nodes) { nodes.forEach(n => el.children.push(n)); },
+    prepend(node) { el.children.unshift(node); return node; },
     setAttribute(name, value) { attrs.set(name, String(value)); if (name === 'class') el.className = String(value); },
     getAttribute(name) { return attrs.has(name) ? attrs.get(name) : null; },
     querySelector(sel) {
@@ -402,4 +403,34 @@ test('drawioEmbedJson：编码后的 JSON 可解码回原 XML', async () => {
   const xml = '<mxfile><diagram id="d"/></mxfile>';
   assert.deepEqual(JSON.parse(decodeURIComponent(drawioEmbedJson(xml))),
     { xml, toolbar: '', nav: false, resize: true });
+});
+
+test('drawio 编辑：宽屏打开内联编辑器，窄屏给提示并退回 CodeMirror', async () => {
+  const xml = '<mxfile><diagram id="d"/></mxfile>';
+  globalThis.GraphViewer = { processElements() {} };
+  try {
+    const opened = [];
+    const wide = harness({ sanitizeHtml: html => html, getDrawioEditor: () => ({ widthCheck: () => true, open: args => opened.push(args), close() {} }) });
+    wide.ctl.open('/w');
+    wide.pending('browse:list')[0].ack({ ok: true, truncated: false, totalCount: 1, entries: [{ name: 'd.drawio', kind: 'file', size: xml.length, mtime: 1 }] });
+    wide.rowNamed('d.drawio').onclick();
+    for (const script of wide.head.children) script.onload();
+    wide.pending('browse:read')[0].ack({ ok: true, content: xml, bytesRead: xml.length, truncated: false, totalSize: xml.length, contentHash: 'h' });
+    await new Promise(setImmediate);
+    wide.dom.fileBrowseEdit.onclick();
+    assert.equal(opened.length, 1, '宽屏没有打开 drawio 编辑器');
+    assert.equal(opened[0].xml, xml);
+    assert.equal(opened[0].host, wide.dom.fileBrowseBody);
+
+    const narrow = harness({ sanitizeHtml: html => html, getDrawioEditor: () => ({ widthCheck: () => false, open: () => { throw new Error('窄屏不该打开'); }, close() {} }) });
+    narrow.ctl.open('/w');
+    narrow.pending('browse:list')[0].ack({ ok: true, truncated: false, totalCount: 1, entries: [{ name: 'd.drawio', kind: 'file', size: xml.length, mtime: 1 }] });
+    narrow.rowNamed('d.drawio').onclick();
+    for (const script of narrow.head.children) script.onload();
+    narrow.pending('browse:read')[0].ack({ ok: true, content: xml, bytesRead: xml.length, truncated: false, totalSize: xml.length, contentHash: 'h' });
+    await new Promise(setImmediate);
+    globalThis.CodeMirror = (_holder, opts) => ({ mode: opts.mode, getValue: () => opts.value, setValue() {}, setOption() {}, focus() {}, lineCount: () => 1, addLineClass() {}, charCoords: () => ({ top: 0 }) });
+    narrow.dom.fileBrowseEdit.onclick();
+    assert.ok(narrow.dom.fileBrowseBody.querySelector('[data-testid="drawio-needs-wide"]'), '窄屏没有提示');
+  } finally { delete globalThis.GraphViewer; delete globalThis.CodeMirror; }
 });

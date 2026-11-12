@@ -198,6 +198,7 @@ import { createGateFocusController } from './app/focus-layers.js';
 import { createConsoleModal } from './app/console-modal.js';
 import { createServiceStatus } from './app/service-status.js';
 import { createMessageActions } from './app/message-actions.js';
+import { createDrawioEditorBridge } from './app/drawio-editor.js';
 import { createStatuslineView } from './app/statusline-view.js';
 import { createEmptySurfaces, starterPromptsHtml, wireStarterPrompts } from './app/empty-surfaces.js';
 import { createSessionSidebar } from './app/session-sidebar.js';
@@ -5198,8 +5199,10 @@ import { createKeyboardInset } from './app/keyboard-inset.js';
   });
 
   // ---- 项目文件只读浏览：传输回调、分页状态和 DOM 渲染由独立 controller 管理 ----
+  let drawioEditor = null; // 先声明：控制器只拿 getter，等它构造完再建桥（两者互相回调）
   const fileBrowser = createFileBrowser(appContext, {
     baseName,
+    getDrawioEditor: () => drawioEditor,
     confirmDiscardEdit: () => appConfirm({
       title: t('放弃未保存的修改？'),
       body: t('编辑内容尚未保存，离开后将丢失。'),
@@ -5214,6 +5217,16 @@ import { createKeyboardInset } from './app/keyboard-inset.js';
       FORBID_TAGS: ['script'],
       FORBID_ATTR: ['onerror', 'onload', 'onclick'],
     }),
+  });
+  drawioEditor = createDrawioEditorBridge({
+    documentRef: document,
+    socket,
+    addBar,
+    haptic,
+    // 窄屏不给内联编辑器：drawio 的菜单/形状面板在 390px 下会挤成一团，改用源码编辑。
+    widthCheck: () => window.matchMedia('(min-width: 768px)').matches,
+    onSaved: (xml, hash) => fileBrowser.applyDrawioSave(xml, hash),
+    onExit: () => fileBrowser.applyDrawioExit(),
   });
   const gitChanges = createGitChangesPanel(appContext, {
     createElement: el,
