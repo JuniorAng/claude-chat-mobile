@@ -3,7 +3,7 @@
 // #359 Step 4 从 app.js 原样迁出；只有本模块用的几份状态（显示更多档位、终端聚合态、保鲜计时器、未读跳转）随代码搬入，
 // 与 app.js 共用的可变态经 getter / setter 注入，声明在实例化点之后的依赖经惰性包装注入。
 
-import { MISSING_FOLDERS_NOTICE_ID, disconnectFolderConfirm, displaySessionTitle, esc, folderReasonText, folderRowMenuItems, formatServiceNoticeRows, formatSessionRowSubtitle, formatSessionRowTime, liveRowsForSection, mergeOrphanRowsByTime, openSessionsUnderRoot, orphanLiveRows, remainingOlderSessionCount, resolveDrawerStatus, resolveDrawerStatusChip, resolveHeaderAttentionChip, resolveHeaderConnBadge, resolveRowTerminalState, sessionRowMenuItems, shouldRerenderSessionList, summarizeOtherWorkspaces, undismissedServiceNotices, unownedLiveInstances, whatNeedsAttention } from '../logic.js';
+import { MISSING_FOLDERS_NOTICE_ID, disconnectFolderConfirm, displaySessionTitle, esc, folderReasonText, folderRowMenuItems, formatServiceNoticeRows, formatSessionRowSubtitle, formatSessionRowTime, groupProjectsByActivity, liveRowsForSection, mergeOrphanRowsByTime, openSessionsUnderRoot, orphanLiveRows, remainingOlderSessionCount, resolveDrawerStatus, resolveDrawerStatusChip, resolveHeaderAttentionChip, resolveHeaderConnBadge, resolveRowTerminalState, sessionRowMenuItems, shouldRerenderSessionList, summarizeOtherWorkspaces, undismissedServiceNotices, unownedLiveInstances, whatNeedsAttention } from '../logic.js';
 import { attachFolderDrag } from './folder-drag.js';
 import { bindSessionRowsHost, bindSessionSearchInput } from './session-search.js';
 import { createDrawerUnreadJump } from './drawer-unread-jump.js';
@@ -37,6 +37,22 @@ export function createSessionSidebar(context, {
   const terminalStateExpiry = createLastKnownExpiry({ ttlMs: 60_000 });
 
   let sessionPanelRevalidateTimer = null;
+
+  // 抽屉项目分组（「最近活跃 / 更早」）的展开态。只记用户手动点过的那一组；没记过时
+  // 「最近活跃」默认展开、「更早」默认收起——旧项目多到要滚的人打开抽屉第一眼看到的是现在在用的。
+  const DIR_GROUP_OPEN_KEY = 'ccm_dir_group_open';
+  const loadDirGroupOpen = () => {
+    try {
+      const raw = JSON.parse(localStorage.getItem(DIR_GROUP_OPEN_KEY) || '{}');
+      return raw && typeof raw === 'object' && !Array.isArray(raw) ? raw : {};
+    } catch { return {}; }
+  };
+  const saveDirGroupOpen = (id, open) => {
+    try {
+      const next = { ...loadDirGroupOpen(), [id]: open };
+      localStorage.setItem(DIR_GROUP_OPEN_KEY, JSON.stringify(next));
+    } catch { /* 隐私模式禁止写：本次会话照常展开/收起，只是记不住 */ }
+  };
 
   // 目录头「N 未读」角标 → 依次跳到下一条未读行。角标此前是纯展示：它准确报出「有 N 条未读」，
   // 却答不了「在哪」——列表按时间排、未读判据逐条独立，一条未读完全可能在第 30 行（见模块头注）。
@@ -969,6 +985,22 @@ export function createSessionSidebar(context, {
     };
   }
 
+  // 分组头（「最近活跃 / 更早」）。只在服务端给出 lastActiveAt 时才出现（见 groupProjectsByActivity）：
+  // 旧服务端 / 旧 mock 下仍是改动前那份平铺 DOM。组头是导航，不承担状态展示，计数只报项目数。
+  function buildDirGroup({ id, projects }) {
+    const details = el(`<details class="dir-group" data-testid="dir-group" data-group="${id}">
+      <summary class="dir-group-head">
+        <span class="dir-group-arrow shrink-0" aria-hidden="true">▸</span>
+        <span class="dir-group-label flex-1 min-w-0 truncate"></span>
+        <span class="dir-group-count shrink-0 tabular-nums"></span>
+      </summary>
+      <div class="dir-group-body"></div>
+    </details>`);
+    details.querySelector('.dir-group-label').textContent = id === 'recent' ? t('最近活跃') : t('更早');
+    details.querySelector('.dir-group-count').textContent = String(projects.length);
+    return details;
+  }
+
   function openSessionPanel() {
     sessionPanel.innerHTML = '';
     // ★ 这里【不】清抽屉的失败回执。列表重建与那条回执没有因果关系，而每次打开抽屉都会走到
@@ -1007,11 +1039,43 @@ export function createSessionSidebar(context, {
     //   展开：📂 ▼ basename + 角标 → 下方缩进显示该目录会话列表（纯 /resume 时间序，已打开者就地标 ✕/角标）
     //   折叠：📁 ▶ basename + 角标 → 点击展开（若非当前 cwd 则同时切换）
     setDirSectionNodes(new Map());
-    for (const d of getAvailableDirs()) {
+    // 活实例、当前 cwd 算「正在用」→ 留在最近组（这不是伪造活动时间：人就坐在那里）。
+    // 未读只强制展开它所在的组，不改组别——「很久没看」不该被说成「最近活跃」。
+    const forceRecent = new Set();
+    const forceOpen = new Set();
+    if (getCurrentCwd()) { forceRecent.add(getCurrentCwd()); forceOpen.add(getCurrentCwd()); }
+    for (const inst of getInstancesList()) {
+      const key = inst?.projectKey || inst?.cwd;
+      if (key) { forceRecent.add(key); forceOpen.add(key); }
+    }
+    for (const d of getAvailableDirs()) if (unreadCountForDir(d) > 0) forceOpen.add(d);
+    const groupOpen = loadDirGroupOpen();
+    const appendSection = (parent, d) => {
       const section = buildDirSection(d);
-      sessionPanel.appendChild(section.dirRow);
-      sessionPanel.appendChild(section.subtree);
+      parent.appendChild(section.dirRow);
+      parent.appendChild(section.subtree);
       getDirSectionNodes().set(d, section);
+    };
+    for (const group of groupProjectsByActivity(projectsState.entries(), { forceRecent: [...forceRecent] })) {
+      if (group.id === 'all') {
+        for (const p of group.projects) appendSection(sessionPanel, p.key);
+        continue;
+      }
+      // 默认：最近组展开、更早组收起；但这组里有未读 / 正开着的会话时强制展开——
+      // 分组是导航手段，不能把「有个东西在等你」藏进一个默认收起的组里。
+      const forcedOpen = group.projects.some(p => forceOpen.has(p.key));
+      const open = forcedOpen || (typeof groupOpen[group.id] === 'boolean' ? groupOpen[group.id] : group.id === 'recent');
+      const details = buildDirGroup(group);
+      details.open = open;
+      let lastOpen = open; // 只把用户手动切换写回 localStorage，程序化设置的展开不覆盖用户偏好
+      details.addEventListener('toggle', () => {
+        if (details.open === lastOpen) return;
+        lastOpen = details.open;
+        saveDirGroupOpen(group.id, details.open);
+      });
+      const body = details.querySelector('.dir-group-body');
+      for (const p of group.projects) appendSection(body, p.key);
+      sessionPanel.appendChild(details);
     }
     const unowned = buildUnownedLiveSection();
     if (unowned) sessionPanel.appendChild(unowned);
@@ -1046,8 +1110,11 @@ export function createSessionSidebar(context, {
         openSessionPanel();
         return;
       }
-      sessionPanel.appendChild(section.dirRow);
-      sessionPanel.appendChild(section.subtree);
+      // 挪在【原容器】里：项目分组之后 dirRow 不再直接挂在 #sessionPanel 下，
+      // appendChild 到面板会把它从分组里拽出来（分组头变空壳）。
+      const parent = section.dirRow.parentElement || sessionPanel;
+      parent.appendChild(section.dirRow);
+      parent.appendChild(section.subtree);
     }
     const unowned = sessionPanel.querySelector('[data-testid="unowned-live-section"]');
     if (unowned) sessionPanel.appendChild(unowned);

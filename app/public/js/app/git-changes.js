@@ -231,10 +231,15 @@ export function createWorkspacePanel(context, {
   haptic = () => {},
   fileBrowser,
   gitChanges,
+  win = globalThis.window,
+  dockedMinWidth = 1280,
 } = {}) {
   const dom = context.dom;
   let activeTab = null;   // 'files' | 'changes'
   let cwd = null;
+  // 宽屏右栏（≥1280）：这块面板就是常驻第三列，不再是底部弹层。判据只在这里，
+  // 调用方（顶栏 pill / 文件链接）不必各自记得——与 drawer.js 的桌面 no-op 同一套做法。
+  const isDocked = () => Number(win?.innerWidth || 0) >= dockedMinWidth;
 
   function paintTab(tab) {
     activeTab = tab;
@@ -284,6 +289,17 @@ export function createWorkspacePanel(context, {
   }
 
   function open(nextCwd, tab = 'files', worktreeGoneNotice = null) {
+    // 停靠态：不 openSheet——那会把 body 标成 ccm-sheet-open，CSS 随之锁住 #messages 滚动，
+    // 而聊天列在这个断点是主舞台，不能被一个常驻面板冻住。
+    if (isDocked()) {
+      cwd = nextCwd;
+      activeTab = null;
+      paintWorktreeGone(worktreeGoneNotice);
+      paintTab(tab);
+      if (tab === 'files') fileBrowser?.open?.(cwd);
+      else gitChanges?.open?.(cwd);
+      return;
+    }
     show(nextCwd, tab, worktreeGoneNotice);
     if (tab === 'files') fileBrowser?.open?.(cwd);
     else gitChanges?.open?.(cwd);
@@ -291,11 +307,32 @@ export function createWorkspacePanel(context, {
 
   // 从消息里的文件链接进来：直接落到那个文件或目录，target 为 { path, line }
   function openFile(nextCwd, worktreeGoneNotice, target) {
+    if (isDocked()) {
+      cwd = nextCwd;
+      activeTab = null;
+      paintWorktreeGone(worktreeGoneNotice);
+      paintTab('files');
+      fileBrowser?.openTarget?.(cwd, target);
+      return;
+    }
     show(nextCwd, 'files', worktreeGoneNotice);
     fileBrowser?.openTarget?.(cwd, target);
   }
 
+  // 停靠态下内容得自己跟上来：视图/工作区换了，右栏就该显示新目录。切 tab 不改 cwd，
+  // 只在没加载过时兜底（避免每次 instances 广播都重拉文件列表）。
+  function ensure(nextCwd) {
+    if (!isDocked() || !nextCwd) return;
+    if (cwd === nextCwd && activeTab) return;
+    cwd = nextCwd;
+    const tab = activeTab || 'files';
+    paintTab(tab);
+    if (tab === 'files') fileBrowser?.open?.(cwd);
+    else gitChanges?.open?.(cwd);
+  }
+
   async function close() {
+    if (isDocked()) return; // 常驻列没有「关闭」这个动作
     if (activeTab === 'files' && !(await leaveFiles())) return;
     closeSheet(dom.workspaceModal);
   }
@@ -313,5 +350,5 @@ export function createWorkspacePanel(context, {
     };
   }
 
-  return { open, openFile, close, selectTab };
+  return { open, openFile, close, selectTab, ensure, isDocked };
 }

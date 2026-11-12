@@ -6,13 +6,35 @@
 // 子项目只能从 ~/.claude/projects 反查：目录名是有损编码，读 transcript 记下的 cwd（projectCwdsOf），
 // 再问授权判据它归哪个项目——已删的目录、禁区、连接范围外的，判据都答 null，于是自然不列。
 // 这份清单只管展示分组，不授予任何访问：打开会话时每个 cwd 仍要单独过授权判据。
-import { readdir } from 'node:fs/promises';
+import { readdir, stat } from 'node:fs/promises';
 import { basename, join, relative, sep } from 'node:path';
-import { projectCwdsOf } from './history.js';
+import { getProjectDir, listProjectMemberDirs, projectCwdsOf } from './history.js';
 import { SCRATCH_DIR_RE } from './folder-access.js';
 import { projectDirDescendantPrefix } from '../shared/project-dir.js';
 
 const byKey = (a, b) => (a.key < b.key ? -1 : a.key > b.key ? 1 : 0);
+
+// 项目最近一次会话活动：项目目录（含其托管 worktree / scratch 成员）里最新一份 transcript 的 mtime。
+// 抽屉只拿它划「今天+昨天」与「更早」，不读尾窗——每分钟一轮、几十个项目也只是 readdir + stat，
+// 而 readLastMessageActivityMs 要逐份开文件读尾窗，放在周期扫描里不值。
+export async function projectActivityMs(key, { baseDir, authorize } = {}) {
+  if (typeof baseDir !== 'string' || !baseDir) return null;
+  // getProjectDir 返回的是项目目录【名】（编码后的相对名），不是绝对路径——必须 join(baseDir)。
+  const dirs = new Set([join(baseDir, getProjectDir(key))]);
+  try {
+    for (const m of await listProjectMemberDirs(key, baseDir, { authorize })) dirs.add(join(baseDir, getProjectDir(m.cwd)));
+  } catch { /* 成员目录读不出来：仍算项目自己那一份 */ }
+  let newest = 0;
+  for (const dir of dirs) {
+    let names;
+    try { names = await readdir(dir); } catch { continue; }
+    const stats = await Promise.all(names
+      .filter(n => n.endsWith('.jsonl'))
+      .map(n => stat(join(dir, n)).catch(() => null)));
+    for (const st of stats) if (st?.isFile() && st.mtimeMs > newest) newest = st.mtimeMs;
+  }
+  return newest || null;
+}
 
 // 扫出已连接文件夹之下、自己不是连接根的项目 → [{ key, root }]。
 // 一个 project 目录可能落着几个 cwd（编码撞名），各自成项目；逐份 transcript 的归属由 history.js 按文件缓存。
@@ -71,17 +93,18 @@ export async function hasScratchSessions({ baseDir, scratchRoot }) {
 // 只对块排序——在数组里的按数组顺序在前，其余（排序之后才连接的）按 connected 的原顺序——再展开。
 // 不在 connected 里的路径直接忽略（断开的根留着记录，期间没重新排过序的话重连后回到原位）。
 // connected 本身不动：主工作目录、回落、新会话缺省、文件范围都读它，不读这里的顺序。
-export function composeProjects({ connected = [], subProjects = [], scratchRoot = null, rootOrder = [] }) {
+export function composeProjects({ connected = [], subProjects = [], scratchRoot = null, rootOrder = [], activity = {} } = {}) {
+  const at = key => (Number.isFinite(activity[key]) ? activity[key] : null);
   const blocks = [];
   const seen = new Set();
   for (const root of connected) {
     if (seen.has(root)) continue;
     seen.add(root);
-    const block = [{ key: root, root, label: basename(root), kind: 'connected' }];
+    const block = [{ key: root, root, label: basename(root), kind: 'connected', lastActiveAt: at(root) }];
     for (const s of subProjects.filter(x => x.root === root).sort(byKey)) {
       if (seen.has(s.key)) continue;
       seen.add(s.key);
-      block.push({ key: s.key, root, label: `${basename(root)} › ${relative(root, s.key)}`, kind: 'subfolder' });
+      block.push({ key: s.key, root, label: `${basename(root)} › ${relative(root, s.key)}`, kind: 'subfolder', lastActiveAt: at(s.key) });
     }
     blocks.push(block);
   }
@@ -89,7 +112,7 @@ export function composeProjects({ connected = [], subProjects = [], scratchRoot 
   const ordered = blocks.filter(b => rank.has(b[0].key)).sort((a, b) => rank.get(a[0].key) - rank.get(b[0].key));
   const out = [...ordered, ...blocks.filter(b => !rank.has(b[0].key))].flat();
   // label 留空：「无文件夹」的文案归前端 i18n
-  if (scratchRoot) out.push({ key: scratchRoot, root: scratchRoot, label: null, kind: 'scratch' });
+  if (scratchRoot) out.push({ key: scratchRoot, root: scratchRoot, label: null, kind: 'scratch', lastActiveAt: at(scratchRoot) });
   return out;
 }
 

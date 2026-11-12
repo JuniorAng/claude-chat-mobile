@@ -112,7 +112,7 @@ import { DEFAULT_SESSION_LIMIT, MAX_LIVE_SESSIONS, sessionListWindow, fitSession
 import { resolveAuthorizedCwd, isWithin } from '../sessions/folder-access.js';
 import { readTranscriptImage, readTranscriptToolResult } from '../sessions/transcript-image-read.js';
 import { parseImageRef, checkImagePayload } from '../shared/transcript-image.js';
-import { composeProjects, createProjectIndex, discoverSubProjects, hasScratchSessions } from '../sessions/projects.js';
+import { composeProjects, createProjectIndex, discoverSubProjects, hasScratchSessions, projectActivityMs } from '../sessions/projects.js';
 import { createScratchAllocator, removeScratchWorkspace } from '../sessions/scratch-workspaces.js';
 import { scratchRoot as defaultScratchRoot } from '../shared/scratch-root.js';
 import {
@@ -284,10 +284,20 @@ const scratchAllocator = createScratchAllocator(SCRATCH_ROOT);
 // 抽屉的项目清单：子项目靠扫 ~/.claude/projects 反查（sessions/projects.js），扫出的结果变了才广播。
 // 触发：启动、工作区热加载、删除会话、活实例所在的子项目还没扫到、每分钟一次（有已批准连接时，见 listen 前）。
 const projectIndex = createProjectIndex({
-  discover: async () => ({
-    subProjects: await discoverSubProjects({ connected: workDirs, baseDir: CLAUDE_PROJECTS_DIR, authorize }),
-    scratchInUse: await hasScratchSessions({ baseDir: CLAUDE_PROJECTS_DIR, scratchRoot: scratchRootKey() }),
-  }),
+  discover: async () => {
+    const subProjects = await discoverSubProjects({ connected: workDirs, baseDir: CLAUDE_PROJECTS_DIR, authorize });
+    const scratchRoot = scratchRootKey();
+    const scratchInUse = await hasScratchSessions({ baseDir: CLAUDE_PROJECTS_DIR, scratchRoot });
+    // 每个项目最近一次会话活动（抽屉「最近活跃 / 更早」分组用）。与子项目一起在周期扫描里算：
+    // readdir + stat，几十个项目一次几十毫秒；放在每一帧 instances 广播里现算就会跟着轮次边界反复读盘。
+    const keys = [...workDirs, ...subProjects.map(s => s.key), ...(scratchInUse ? [scratchRoot] : [])];
+    const activity = {};
+    await Promise.all(keys.map(async key => {
+      const ms = await projectActivityMs(key, { baseDir: CLAUDE_PROJECTS_DIR, authorize }).catch(() => null);
+      if (ms) activity[key] = ms;
+    }));
+    return { subProjects, scratchInUse, activity };
+  },
   onChange: () => broadcastInstances(),
 });
 // 成员目录（平级 worktree、scratch 目录）并不并进项目的列表，由同一份授权判据裁决（history.js）
@@ -1500,6 +1510,8 @@ function instancesPayload() {
     scratchRoot: scratchInUse ? payload.scratchRoot : null,
     // 抽屉文件夹的手动顺序（长按拖动）：只改展示顺序，workDirs 与一切回落都不读它
     rootOrder: folderOrder.listRootOrder(),
+    // 「最近活跃 / 更早」分组的判据：最近一次 transcript 写入时间（周期扫描算，见 projectIndex）
+    activity: scanned?.activity ?? {},
   });
   // 当前 cwd 的「CLI 默认模型」（scout / fresh 首 init 探得，非推断——A1 删的是旧的推断字段，此为实测值）：
   // 供新会话/无记录续接在 init 前显真实默认名而非笼统「沿用当前」（前端只改标签、发送仍不带 --model）。

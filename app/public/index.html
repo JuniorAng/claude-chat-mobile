@@ -524,6 +524,23 @@
   <div id="workspaceModal" class="ccm-sheet hidden fixed inset-0 z-40 bg-black/40 flex items-end" role="dialog" aria-modal="true" aria-label="工作区">
     <div class="w-full h-[85vh] bg-surface rounded-t-2xl flex flex-col safe-bottom" style="box-shadow:var(--shadow-pop)">
       <div class="sheet-handle mt-3 shrink-0"></div>
+      <!-- 桌面右栏（≥1280px）：这一整块在这个断点变成常驻第三列，而不是底部弹层（见 app.css 的同断点规则）。
+           上三张卡是纯信息面板，下面的文件 / 改动两个 tab 原样复用——不复制 file-browser / git-changes 控制器。
+           移动端 .rail-only 隐藏，弹层与改动前逐像素相同。 -->
+      <div id="rightRailTop" class="rail-only flex-col shrink-0" data-testid="desktop-rail">
+        <section class="rail-card" data-testid="rail-session">
+          <div class="rail-card-head"><span class="rail-card-title">当前会话</span><span id="railSessionBadge" class="rail-badge hidden"></span></div>
+          <div id="railSessionBody" class="rail-card-body" data-testid="rail-session-body"></div>
+        </section>
+        <section class="rail-card" data-testid="rail-workspaces">
+          <div class="rail-card-head"><span class="rail-card-title">其他工作区</span><span id="railWorkspacesCount" class="rail-badge"></span></div>
+          <div id="railWorkspacesBody" class="rail-card-body rail-card-scroll" data-testid="rail-workspaces-body"></div>
+        </section>
+        <section class="rail-card" data-testid="rail-tasks">
+          <div class="rail-card-head"><span class="rail-card-title">后台任务</span><span id="railTasksCount" class="rail-badge"></span></div>
+          <div id="railTasksBody" class="rail-card-body rail-card-scroll" data-testid="rail-tasks-body"></div>
+        </section>
+      </div>
       <!-- tab 行：两个能力平铺可见，不再需要"先发现再选择" -->
       <div class="px-3 pb-2 flex items-center gap-2 border-b border-line shrink-0">
         <div class="flex items-center gap-1 flex-1 min-w-0" role="tablist" aria-label="工作区">

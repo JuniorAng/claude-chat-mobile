@@ -6,13 +6,13 @@
 // 再交给授权判据决定它归哪个项目（worktree 归仓库、已删的、禁区里的一律不列）。
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync, realpathSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync, realpathSync, utimesSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { getProjectDir } from '../../app/src/sessions/history.js';
 import { resolveAuthorizedCwd } from '../../app/src/sessions/folder-access.js';
-import { discoverSubProjects, composeProjects, createProjectIndex, hasScratchSessions } from '../../app/src/sessions/projects.js';
+import { discoverSubProjects, composeProjects, createProjectIndex, hasScratchSessions, projectActivityMs } from '../../app/src/sessions/projects.js';
 
 const ROOT = realpathSync(mkdtempSync(join(tmpdir(), 'ccm-projects-')));
 test.after(() => rmSync(ROOT, { recursive: true, force: true })); // safe-rm: mkdtemp 一次性目录
@@ -193,12 +193,12 @@ test('composeProjects：连接根按配置顺序，各自的子项目紧随其�
     scratchRoot: '/s',
   });
   assert.deepEqual(projects, [
-    { key: '/c/one', root: '/c/one', label: 'one', kind: 'connected' },
-    { key: '/c/one/a', root: '/c/one', label: 'one › a', kind: 'subfolder' },
-    { key: '/c/one/b/deep', root: '/c/one', label: 'one › b/deep', kind: 'subfolder' },
-    { key: '/c/two', root: '/c/two', label: 'two', kind: 'connected' },
-    { key: '/c/two/z', root: '/c/two', label: 'two › z', kind: 'subfolder' },
-    { key: '/s', root: '/s', label: null, kind: 'scratch' },
+    { key: '/c/one', root: '/c/one', label: 'one', kind: 'connected', lastActiveAt: null },
+    { key: '/c/one/a', root: '/c/one', label: 'one › a', kind: 'subfolder', lastActiveAt: null },
+    { key: '/c/one/b/deep', root: '/c/one', label: 'one › b/deep', kind: 'subfolder', lastActiveAt: null },
+    { key: '/c/two', root: '/c/two', label: 'two', kind: 'connected', lastActiveAt: null },
+    { key: '/c/two/z', root: '/c/two', label: 'two › z', kind: 'subfolder', lastActiveAt: null },
+    { key: '/s', root: '/s', label: null, kind: 'scratch', lastActiveAt: null },
   ]);
 });
 
@@ -367,4 +367,31 @@ test('编码撞名的两个子文件夹各成一个项目，不只认第一个',
   }
   const keys = (await discover(baseDir, { connected: [code] })).map(p => p.key);
   for (const p of pairs.flat()) assert.ok(keys.includes(p), `${p} 有会话却没成为一节：${JSON.stringify(keys)}`);
+});
+
+// 抽屉「最近活跃 / 更早」分组（2026-11-12）：服务端只负责给出每个项目最近一次 transcript 写入时间，
+// 日界怎么划归前端（logic/projects.js）。这里钉住「算得出来」与「composeProjects 原样带下去」。
+test('projectActivityMs：取项目目录里最新一份 transcript 的 mtime；没有会话返回 null', async () => {
+  const { baseDir, code } = fixture();
+  writeTranscript(baseDir, code, [code], 'old');
+  const dir = join(baseDir, getProjectDir(code));
+  const old = new Date('2026-11-01T00:00:00Z').getTime();
+  utimesSync(join(dir, 'old.jsonl'), old / 1000, old / 1000);
+  writeTranscript(baseDir, code, [code], 'new');
+  const fresh = new Date('2026-11-12T00:00:00Z').getTime();
+  utimesSync(join(dir, 'new.jsonl'), fresh / 1000, fresh / 1000);
+
+  assert.equal(await projectActivityMs(code, { baseDir, authorize: c => resolveAuthorizedCwd(c, { connected: [code] }) }), fresh);
+  assert.equal(await projectActivityMs(join(code, 'never-used'), { baseDir }), null, '从没开过会话的项目不该被算成「刚刚活跃」');
+});
+
+test('composeProjects：activity 落到每个项目的 lastActiveAt；没传 activity 时是 null（旧调用方）', () => {
+  const out = composeProjects({
+    connected: ['/c/a'], subProjects: [{ key: '/c/a/pkg', root: '/c/a' }], scratchRoot: '/s',
+    activity: { '/c/a': 111, '/c/a/pkg': 222 },
+  });
+  assert.deepEqual(out.map(p => [p.key, p.lastActiveAt]), [
+    ['/c/a', 111], ['/c/a/pkg', 222], ['/s', null],
+  ]);
+  assert.equal(composeProjects({ connected: ['/c/a'] })[0].lastActiveAt, null);
 });

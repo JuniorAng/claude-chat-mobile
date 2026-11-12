@@ -855,6 +855,93 @@ header {
   }
 }
 
+/* ── 桌面右栏（≥1280px）──
+   宽屏下 #workspaceModal 不再当底部弹层：它被停靠成第三列，上半截是三张只读信息卡
+   （app/desktop-rail.js），下半截原样是文件 / 改动两个 tab。移动端 .rail-only 隐藏，
+   弹层与改动前逐像素相同。 */
+.rail-only { display: none; }
+.rail-card { padding: 0.5rem 0.75rem; border-bottom: 1px solid var(--line-soft); }
+.rail-card:last-child { border-bottom: 0; }
+.rail-card-head {
+  display: flex; align-items: center; gap: 0.375rem;
+  font-size: 10.5px; font-weight: 600; color: var(--ink-faint);
+  text-transform: uppercase; letter-spacing: 0.04em;
+}
+.rail-card-title { flex: 1; min-width: 0; }
+.rail-badge {
+  min-width: 16px; height: 16px; padding: 0 4px; border-radius: 999px;
+  background: var(--surface-sunk); color: var(--ink-soft);
+  font-size: 10px; display: inline-flex; align-items: center; justify-content: center;
+  font-variant-numeric: tabular-nums;
+}
+.rail-card-body { margin-top: 0.375rem; display: flex; flex-direction: column; gap: 0.25rem; font-size: 11px; color: var(--ink-soft); }
+.rail-card-scroll { max-height: 9.5rem; overflow-y: auto; }
+.rail-row { display: flex; gap: 0.5rem; align-items: baseline; }
+.rail-k { flex: 0 0 3.25rem; color: var(--ink-faint); }
+.rail-v {
+  flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  font-family: var(--font-mono);
+}
+.rail-empty { color: var(--ink-faint); }
+.rail-ws {
+  display: flex; align-items: center; gap: 0.4rem; width: 100%; text-align: left;
+  padding: 0.25rem; border-radius: 0.375rem;
+}
+.rail-ws:hover { background: var(--surface-sunk); }
+.rail-ws-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--ink-faint); flex: 0 0 auto; }
+.rail-ws-dot[data-state="busy"] { background: var(--accent); }
+.rail-ws-dot[data-state="permission"] { background: var(--warning); }
+.rail-ws-dot[data-state="error"] { background: var(--danger); }
+.rail-ws-text { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+.rail-ws-project, .rail-ws-title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.rail-ws-project { font-size: 10px; color: var(--ink-faint); }
+.rail-ws-title { color: var(--ink); }
+.rail-ws-state { font-size: 10px; color: var(--ink-faint); flex: 0 0 auto; }
+.rail-task { display: flex; gap: 0.375rem; }
+.rail-task-text { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+@media (min-width: 1280px) {
+  body {
+    grid-template-columns: 240px minmax(0, 1fr) minmax(320px, 400px) !important;
+  }
+  body.sidebar-collapsed {
+    grid-template-columns: 0px minmax(0, 1fr) minmax(320px, 400px) !important;
+  }
+  #leftSidebar {
+    width: 240px !important;
+    max-width: 240px !important;
+  }
+  /* 让开常驻侧栏的阻塞 sheet：240 是上面第三列布局的侧栏宽度（1024 档仍是 300） */
+  body:not(.sidebar-collapsed) .ccm-sheet-blocking { left: 240px; }
+
+  /* 停靠：把弹层从 fixed 浮层变回正常流里的第三列。display/visibility/opacity 都要 !important，
+     因为 .hidden 与 .ccm-sheet 的收起态也是 !important 级别的工具类/基础规则。 */
+  #workspaceModal {
+    grid-column: 3 !important;
+    grid-row: 1 / -1 !important;
+    position: static !important;
+    display: flex !important;
+    align-items: stretch !important;
+    background: transparent !important;
+    opacity: 1 !important;
+    visibility: visible !important;
+    pointer-events: auto !important;
+    z-index: 1 !important;
+    transition: none !important;
+  }
+  #workspaceModal > div {
+    height: 100% !important;
+    border-radius: 0 !important;
+    box-shadow: none !important;
+    border-left: 1px solid var(--line) !important;
+    transform: none !important;
+    transition: none !important;
+  }
+  #workspaceModal .sheet-handle,
+  #workspaceClose { display: none !important; }
+  .rail-only { display: flex; }
+}
+
 /* ── 底栏弹层的统一滑入滑出过渡 (替代 hidden 硬切) ──
    #369：用 .ccm-sheet 类选择器，不再枚举 modal ID——新 sheet 只要带这个类（openSheet
    也会补上）就自动具备同一开合过渡；ID 白名单会漏 #workspaceModal 等新面板。 */
@@ -965,6 +1052,30 @@ header {
   .dir-arrow.rotated {
     transform: rotate(90deg);
   }
+  /* 抽屉项目分组（最近活跃 / 更早）：组头是二级标题，比目录行轻一档；箭头跟 .dir-arrow 同一套旋转语汇。 */
+  .dir-group {
+    border-bottom: 1px solid var(--line);
+  }
+  .dir-group-head {
+    display: flex;
+    align-items: center;
+    gap: 0.375rem;
+    padding: 0.4rem 0.75rem;
+    font-size: 10.5px;
+    font-weight: 600;
+    color: var(--ink-faint);
+    cursor: pointer;
+    user-select: none;
+    list-style: none;
+  }
+  .dir-group-head::-webkit-details-marker { display: none; }
+  .dir-group-head:hover { background: var(--surface-sunk); }
+  .dir-group-arrow {
+    display: inline-block;
+    transition: transform 0.22s cubic-bezier(0.16, 1, 0.3, 1);
+  }
+  .dir-group[open] .dir-group-arrow { transform: rotate(90deg); }
+  .dir-group[open] > .dir-group-body { border-top: 1px solid var(--line-soft); }
   /* 抽屉会话行 */
   .row-content {
     touch-action: pan-y; /* 仅允许纵向滚动，防止横向滑动与页面滚动冲突 */

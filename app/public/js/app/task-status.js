@@ -20,6 +20,7 @@ export function createTaskStatusController(context, {
   createElement = null,
   haptic = () => {},
   notify = () => {},
+  onChange = () => {},
 } = {}) {
   const dom = context.dom;
   /** @type {Map<string, { message: string, taskType: string|null, lastToolName?: string|null, description?: string|null, subagentType?: string|null }>} */
@@ -78,6 +79,7 @@ export function createTaskStatusController(context, {
     if (n <= 0) {
       if (dom.taskBannerLabel) dom.taskBannerLabel.textContent = t('后台任务');
       dom.taskProgressText.textContent = '';
+      onChange();
       return;
     }
     const copy = formatBgTaskBannerCopy([...tasks.values()]);
@@ -85,6 +87,7 @@ export function createTaskStatusController(context, {
     dom.taskProgressText.textContent = copy.status;
     dom.taskProgressBanner.classList.remove('hidden');
     syncStopButton();
+    onChange();
   }
 
   function hideProgress() {
@@ -104,6 +107,7 @@ export function createTaskStatusController(context, {
     if (dom.taskProgressText) dom.taskProgressText.textContent = '';
     syncBannerToggle(true);
     syncStopButton();
+    onChange();
   }
 
   // tasks 收缩后（单个任务完成删除，或全量快照重建）同步清理 progressHistory：否则已消失任务的历史
@@ -552,5 +556,7 @@ export function createTaskStatusController(context, {
     hideProgress,
     onComplete,
     onProgress,
+    // 桌面右栏「后台任务」卡：只读快照，按当前实例在跑的任务。不外泄内部 Map。
+    snapshot: () => [...tasks.entries()].map(([id, task]) => ({ id, ...task })),
   };
 }

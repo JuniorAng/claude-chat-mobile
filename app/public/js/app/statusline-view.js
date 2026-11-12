@@ -6,7 +6,7 @@ import { t } from '../i18n.js';
 
 export function createStatuslineView({
   $, addBar, copyText, messagesEl, renderLiveLine, updateWorkspaceChangeBadge, getCurrentCwd, getLiveLine,
-  getViewingInstanceId,
+  getViewingInstanceId, onStatusLine = () => {},
 } = {}) {
   const cliStatusEl = $('cliStatus');   // E16：web 状态栏容器（status_line 事件填充，原生 DOM 结构化渲染非 ANSI）
   const cliStatusBarEl = $('cliStatusBar'); // E16：状态栏外层（含 details + 复制按钮；揭示=去 hidden）
@@ -39,6 +39,9 @@ export function createStatuslineView({
     // ——`!cliStatusEl`（statusline 容器缺失）与 `empty-start`（空启动页）都与角标无关，角标挂在顶栏
     // 而非状态栏里，不该被状态栏的存在与否绑架。
     updateWorkspaceChangeBadge(p.git);
+    // 桌面右栏的「当前会话」卡与状态栏同源：过了上面两道跨区守护才给它，别的工作区的状态线不串号。
+    // 放在 `!cliStatusEl` 早退之前——右栏不依赖 composer 里的状态栏容器是否存在。
+    onStatusLine(p);
     if (!cliStatusEl) return;
     // per-turn 权威秒表/token（agent.turnStartedAt/turnOutputTokens）：刷新/切实例回来后 live 行恢复真值
     if (p.turn && getLiveLine()) {

@@ -9,8 +9,8 @@ import { setLang } from '../../app/public/js/i18n.js';
 
 test('没有 projects：回落到 dirs，每个目录一节', () => {
   assert.deepEqual(normalizeProjects({ dirs: ['/c/a', '/c/b'] }), [
-    { key: '/c/a', root: '/c/a', label: null, kind: 'connected' },
-    { key: '/c/b', root: '/c/b', label: null, kind: 'connected' },
+    { key: '/c/a', root: '/c/a', label: null, kind: 'connected', lastActiveAt: null },
+    { key: '/c/b', root: '/c/b', label: null, kind: 'connected', lastActiveAt: null },
   ]);
   assert.deepEqual(normalizeProjects({}), []);
   assert.deepEqual(normalizeProjects(null), []);
@@ -34,8 +34,58 @@ test('有 projects：按服务端顺序；坏条目丢掉、重复的只留第�
   assert.equal(out.find(p => p.key === '/c/x').root, '/c/x', '缺 root 时取 key');
 });
 
-test('projectLabel：无文件夹走 i18n；有 label 用 label；没有就取末段', () => {
-  setLang('zh');
+test('groupProjectsByActivity：今天和昨天算最近活跃，前天及更早算更早', async () => {
+  const { groupProjectsByActivity, isRecentlyActive, calendarDayDiff } = await import('../../app/public/js/logic/projects.js');
+  const now = new Date(2026, 10, 12, 12, 0, 0).getTime(); // 本地时间 2026-11-12 中午
+  const at = (...parts) => new Date(...parts).getTime();
+  assert.equal(calendarDayDiff(now, at(2026, 10, 12, 0, 1)), 0);
+  assert.equal(calendarDayDiff(now, at(2026, 10, 11, 23, 59)), 1);
+  assert.equal(isRecentlyActive(at(2026, 10, 11, 0, 0), { now }), true, '昨天任何时刻都算最近');
+  assert.equal(isRecentlyActive(at(2026, 10, 10, 23, 59), { now }), false, '前天不算');
+  assert.equal(isRecentlyActive(null, { now }), false);
+  assert.equal(isRecentlyActive(now + 3_600_000, { now }), true, '时钟漂移成未来时按今天算');
+
+  const groups = groupProjectsByActivity([
+    { key: '/old', lastActiveAt: at(2026, 10, 1) },
+    { key: '/today', lastActiveAt: at(2026, 10, 12, 9) },
+    { key: '/yesterday', lastActiveAt: at(2026, 10, 11, 9) },
+  ], { now });
+  assert.deepEqual(groups.map(g => [g.id, g.projects.map(p => p.key)]), [
+    ['recent', ['/today', '/yesterday']],
+    ['earlier', ['/old']],
+  ]);
+});
+
+test('groupProjectsByActivity：forceRecent 把活实例/当前目录留在最近组', async () => {
+  const { groupProjectsByActivity } = await import('../../app/public/js/logic/projects.js');
+  const now = new Date(2026, 10, 12, 12).getTime();
+  const groups = groupProjectsByActivity([
+    { key: '/old', lastActiveAt: new Date(2026, 9, 1).getTime() },
+    { key: '/older', lastActiveAt: new Date(2026, 8, 1).getTime() },
+  ], { now, forceRecent: ['/old'] });
+  assert.deepEqual(groups.map(g => g.projects.map(p => p.key)), [['/old'], ['/older']]);
+});
+
+test('groupProjectsByActivity：没有任何项目带活动时间 → 单组，保持原顺序（旧服务端 / 旧 mock）', async () => {
+  const { groupProjectsByActivity } = await import('../../app/public/js/logic/projects.js');
+  const list = [{ key: '/a', lastActiveAt: null }, { key: '/b', lastActiveAt: null }];
+  assert.deepEqual(groupProjectsByActivity(list, { now: Date.now() }), [{ id: 'all', projects: list }]);
+  assert.deepEqual(groupProjectsByActivity([], { now: Date.now() }), [{ id: 'all', projects: [] }]);
+});
+
+test('normalizeProjects：保留合法的 lastActiveAt，非法/缺失归一 null（分组据此退回不分组）', () => {
+  const out = normalizeProjects({
+    projects: [
+      { key: '/a', lastActiveAt: 1_700_000_000_000 },
+      { key: '/b', lastActiveAt: '1700000000000' },
+      { key: '/c', lastActiveAt: 'nope' },
+      { key: '/d' },
+    ],
+  });
+  assert.deepEqual(out.map(p => p.lastActiveAt), [1_700_000_000_000, 1_700_000_000_000, null, null]);
+});
+
+test('projectLabel：无文件夹走 i18n；有 label 用 label；没有就取末段', () => {  setLang('zh');
   assert.equal(projectLabel({ key: '/s', kind: 'scratch', label: null }), '无文件夹');
   assert.equal(projectLabel({ key: '/c/a/pkg', kind: 'subfolder', label: 'a › pkg' }), 'a › pkg');
   assert.equal(projectLabel({ key: '/c/a', kind: 'connected', label: null }), 'a');

@@ -622,15 +622,19 @@ let mockSubProjects = []; // [{ key, root }]：有会话的子文件夹（真 se
 let mockScratchSessions = []; // 「无文件夹」项目 session:list 的行（真 server 由各 scratch 目录的会话并成），场景显式开启
 // 文件夹手动顺序（长按拖动）：同真 server 的 folder-order，连接根的有序数组、整份替换。mockReorderFail 让 folders:reorder 回失败 ack
 let mockRootOrder = [];
+// 每个项目最近一次会话活动（ms）——真 server 由 projectActivityMs 周期扫描得出，抽屉据此分
+// 「最近活跃 / 更早」。缺省空：所有项目 lastActiveAt=null，前端退回不分组，旧用例的 DOM 不变。
+let mockProjectActivity = {};
 let mockReorderFail = false;
 function mockDirFields() {
   const dirs = mockDirs();
   // 同真 server composeProjects：先按根组块（根 + 它的子文件夹），只对块排序，「无文件夹」垫底
+  const at = key => (Number.isFinite(mockProjectActivity[key]) ? mockProjectActivity[key] : null);
   const blocks = dirs.map(d => {
     const name = d.split('/').pop() || d;
-    const block = [{ key: d, root: d, label: name, kind: 'connected' }];
+    const block = [{ key: d, root: d, label: name, kind: 'connected', lastActiveAt: at(d) }];
     for (const sub of mockSubProjects) {
-      if (sub.root === d) block.push({ key: sub.key, root: d, label: `${name} › ${sub.key.slice(d.length + 1)}`, kind: 'subfolder' });
+      if (sub.root === d) block.push({ key: sub.key, root: d, label: `${name} › ${sub.key.slice(d.length + 1)}`, kind: 'subfolder', lastActiveAt: at(sub.key) });
     }
     return block;
   });
@@ -638,7 +642,7 @@ function mockDirFields() {
   const projects = blocks.sort((a, b) => rank(a[0].key) - rank(b[0].key)).flat();
   // 「无文件夹」只在用着时占一节（同真 server：有实例开在里面，或正停在它的新会话页上）
   if (mockInstances.some(i => i.projectKey === MOCK_SCRATCH_ROOT) || (!viewingInstanceId && pendingFreshCwd === MOCK_SCRATCH_ROOT)) {
-    projects.push({ key: MOCK_SCRATCH_ROOT, root: MOCK_SCRATCH_ROOT, label: null, kind: 'scratch' });
+    projects.push({ key: MOCK_SCRATCH_ROOT, root: MOCK_SCRATCH_ROOT, label: null, kind: 'scratch', lastActiveAt: at(MOCK_SCRATCH_ROOT) });
   }
   // foldersReadonly：手机上改不了清单时的原因码（同真 server；test:folders-readonly 那种安装下 folders:add 就回它）
   // autoModeDisabled：真 server 每帧 instances 都带（#461），挂在这里是因为几乎每处 instances 构造都展开本函数
@@ -700,6 +704,7 @@ function resetMockState() {
   mockFolderTree = createMockFolderTree();
   mockAddedFolders = [];
   mockRootOrder = [];
+  mockProjectActivity = {};
   mockReorderFail = false;
   mockFoldersAddError = null;
   mockAutoModeDisabled = false;
@@ -1404,6 +1409,25 @@ app.post('/__set-connected-folders', (req, res) => {
   });
   res.json({ ok: true, dirs: mockDirs() });
 });
+
+// 项目活动时间（抽屉「最近活跃 / 更早」分组）。参数是 JSON：{ "/path": 1762..., ... }。
+// 与真 server 的 lastActiveAt 同形；缺省空对象 = 前端退回不分组，旧用例不受影响。
+app.post('/__set-project-activity', (req, res) => {
+  try {
+    const raw = typeof req.query?.activity === 'string' ? JSON.parse(req.query.activity) : {};
+    mockProjectActivity = raw && typeof raw === 'object' && !Array.isArray(raw) ? raw : {};
+  } catch { mockProjectActivity = {}; }
+  io.emit('agent:event', {
+    seq: 0, epoch: 'server', sessionId: null, ts: Date.now(),
+    type: 'instances', payload: { canRestart: mockCanRestart,
+      viewingInstanceId, viewingCwd: workspaceCwdOf(mockInstances.find(i => i.instanceId === viewingInstanceId)?.cwd),
+      ...mockDirFields(),
+      instances: mockInstances, service: mockServicePayload(),
+    },
+  });
+  res.json({ ok: true });
+});
+
 
 // 断开（同真 server 的 folders:remove）：只认清单里的连接根（绝对路径）。钉住断开后的清单——缺省口径从实例 cwd
 // 现算，开着会话的文件夹会被算回来；钉住之后它的会话落到「不在已连接的文件夹里」，与真 server 一致。返回错误码或 null。
