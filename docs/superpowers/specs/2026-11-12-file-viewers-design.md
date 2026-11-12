@@ -82,6 +82,10 @@
 - 窄屏（`< 768px`）不打开编辑器：给一句「需要更宽的屏幕」+ 保留 CodeMirror XML 编辑退路。
 - `vendor/drawio/editor/` 可整目录删除：只失去内联编辑器，预览与其余功能不受影响。
 
+**最终 vendor 体积**（实测）：`mermaid.min.js` 2.7MB · `drawio/viewer-static.min.js` 8.5MB（release war 版）· `drawio/editor/` 21MB；`vendor/` 合计 32MB。编辑器文件清单以真实浏览器 404 为准（Task 8），没有预先塞入 `img/`、`images/`、`math4/`。
+
+**已知风险（接受）**：`.drawio` 的 `html=1` label 可以画任意非脚本 HTML；脚本被主页面 CSP 拦住。不额外净化 viewer 的 SVG 输出——那会破坏正常的 label。编辑器侧由 opaque-origin sandbox + 独立 CSP 路由兜住。
+
 ### 4.6 统一状态机
 
 `previewKind ∈ null | 'markdown' | 'html' | 'mermaid' | 'drawio'`；`编辑` 进入 CodeMirror（drawio 宽屏例外），保存/取消回到对应预览；分页/截断/行号一律走源码。
