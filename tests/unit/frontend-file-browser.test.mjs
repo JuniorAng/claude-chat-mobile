@@ -405,6 +405,24 @@ test('drawioEmbedJson：编码后的 JSON 可解码回原 XML', async () => {
     { xml, toolbar: '', nav: false, resize: true });
 });
 
+test('drawio 渲染后的第二道硬化：事件属性与 javascript: URL 都拆掉', async () => {
+  const { isDangerousDrawioAttr, hardenDrawioDom } = await import('../../app/public/js/app/file-browser.js');
+  assert.equal(isDangerousDrawioAttr('onclick', 'alert(1)'), true);
+  assert.equal(isDangerousDrawioAttr('ONERROR', 'x'), true);
+  assert.equal(isDangerousDrawioAttr('href', ' javascript:alert(1)'), true);
+  assert.equal(isDangerousDrawioAttr('xlink:href', 'javascript:alert(1)'), true);
+  assert.equal(isDangerousDrawioAttr('href', '#anchor'), false);
+  assert.equal(isDangerousDrawioAttr('src', 'data:image/png;base64,AA'), false);
+  assert.equal(isDangerousDrawioAttr('data-href', 'javascript:alert(1)'), false, '只认真正会执行的三个属性名');
+
+  const removed = [];
+  const el = { attributes: [{ name: 'onclick', value: 'x' }, { name: 'href', value: 'javascript:y' }, { name: 'fill', value: '#fff' }],
+    removeAttribute(name) { removed.push(name); } };
+  assert.equal(hardenDrawioDom({ querySelectorAll: sel => (sel === '*' ? [el] : []) }), 2);
+  assert.deepEqual(removed, ['onclick', 'href']);
+  assert.equal(hardenDrawioDom(null), 0, '没有 DOM（旧调用方/测试桩）时不能抛');
+});
+
 test('drawio 编辑：宽屏打开内联编辑器，窄屏给提示并退回 CodeMirror', async () => {
   const xml = '<mxfile><diagram id="d"/></mxfile>';
   globalThis.GraphViewer = { processElements() {} };

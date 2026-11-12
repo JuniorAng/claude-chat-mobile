@@ -28,6 +28,11 @@ export function cspDirectives(hostHeader, { editor = false } = {}) {
   const host = String(hostHeader ?? '').trim();
   const sameOriginWs = CSP_HOST_RE.test(host) ? ` ws://${host} wss://${host}` : '';
   return [
+    // 编辑器文档即使被直接顶层打开也留在 opaque origin：CSP 的 sandbox 指令与 iframe 的
+    // sandbox="allow-scripts" 取交集，嵌入时行为不变（脚本照跑），顶层打开时读不到 CCM 的
+    // localStorage（auth_token / device_token 在那里）。不安全的是「同源 + unsafe-eval」这一格，
+    // 不是编辑器本身——把 origin 拿掉，放宽 eval 就不再等于把应用机密交给第三方脚本。
+    ...(editor ? ['sandbox allow-scripts'] : []),
     "default-src 'self'",
     `script-src 'self'${editor ? " 'unsafe-eval'" : ''}`,
     "style-src 'self' 'unsafe-inline'",
@@ -466,6 +471,9 @@ export function configureHttpShell({
     res.setHeader('X-Frame-Options', 'SAMEORIGIN');
     res.setHeader('X-Content-Type-Options', 'nosniff');
     res.setHeader('Referrer-Policy', 'no-referrer');
+    // 编辑器文档是 opaque origin（sandbox），它自己的 XHR/fetch 读同路径资源时按跨源处理，
+    // 没有这个头编辑器会缺资源。这里只有公开、无鉴权的 vendor 静态文件，`*` 不暴露任何会话数据；
+    // 真正要挡的是「同源读 localStorage」，已由上面的 CSP sandbox 解决。
     res.setHeader('Access-Control-Allow-Origin', '*');
     res.setHeader('Cache-Control', 'no-cache');
     next();

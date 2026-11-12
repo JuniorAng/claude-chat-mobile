@@ -104,6 +104,40 @@ test('桥：来自别的 window 的消息、非 JSON、未知 event 一律忽略
   assert.equal(bridge.isOpen(), true);
 });
 
+test('桥：source 对上但 origin 是外域时也不处理（sandbox 下合法的是 "null"）', () => {
+  const documentRef = fakeDoc();
+  const writes = [];
+  const bridge = createDrawioEditorBridge({ documentRef, socket: { emit: (_e, p) => writes.push(p) }, addBar: () => {} });
+  const host = documentRef.createElement('div');
+  bridge.open({ host, xml: '<mxfile/>', name: 'a.drawio', baseHash: 'h', cwd: '/w', relPath: 'a.drawio' });
+  const source = host.children.at(-1).contentWindow;
+  bridge.handle({ data: JSON.stringify({ event: 'save', xml: '<x/>' }), source, origin: 'https://evil.example' });
+  assert.deepEqual(writes, [], '外域 origin 的消息被当成编辑器发来的');
+  bridge.handle({ data: JSON.stringify({ event: 'save', xml: '<x/>' }), source, origin: 'null' });
+  assert.equal(writes.length, 1, 'opaque origin（sandbox）的消息必须照常处理');
+});
+
+test('桥：保存回执迟到 + 已换文件：不把 A 的结果套到 B 上', async () => {
+  const documentRef = fakeDoc();
+  let ack = null;
+  const saved = [];
+  const bridge = createDrawioEditorBridge({
+    documentRef,
+    socket: { emit: (_event, _payload, cb) => { ack = cb; } },
+    addBar: () => {},
+    onSaved: (...args) => saved.push(args),
+  });
+  const host = documentRef.createElement('div');
+  bridge.open({ host, xml: '<mxfile id="a"/>', name: 'a.drawio', baseHash: 'ha', cwd: '/w', relPath: 'a.drawio' });
+  bridge.handle({ data: JSON.stringify({ event: 'save', xml: '<mxfile id="a2"/>' }), source: host.children.at(-1).contentWindow });
+  // A 还没回执，用户关掉 A 打开了 B；A 的回执这时才到
+  bridge.open({ host, xml: '<mxfile id="b"/>', name: 'b.drawio', baseHash: 'hb', cwd: '/w', relPath: 'b.drawio' });
+  ack({ ok: true, contentHash: 'ha2' });
+  await new Promise(setImmediate);
+  assert.deepEqual(saved, [], 'A 的迟到回执把 B 当成已保存了');
+  assert.equal(bridge.isOpen(), true, 'A 的回执不该把 B 的编辑器关掉');
+});
+
 test('编辑器 iframe 的 title 走 i18n（英文界面不残留中文）', () => {
   setLang('en');
   try {

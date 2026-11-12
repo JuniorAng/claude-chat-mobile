@@ -1096,15 +1096,18 @@ test.describe('drawio 编辑器路由的 CSP 与 CORS 边界', () => {
     const csp = headers.get('Content-Security-Policy');
     assert.match(csp, /script-src 'self' 'unsafe-eval'/);
     assert.doesNotMatch(csp, /script-src[^;]*unsafe-inline/);
+    // 顶层打开也必须是 opaque origin：unsafe-eval 只会出现在这一档，不能连带拿到应用 localStorage。
+    assert.match(csp, /(^|; )sandbox allow-scripts(;|$)/);
     assert.equal(headers.get('X-Frame-Options'), 'SAMEORIGIN');
     assert.equal(headers.get('Access-Control-Allow-Origin'), '*');
   });
 
-  test('主页面与 API 无 unsafe-eval，且没有 CORS 头', () => {
+  test('主页面与 API 无 unsafe-eval，且没有 CORS 头 / 没有 sandbox 指令', () => {
     const headers = new Map();
     setSecurityHeaders({ setHeader: (k, v) => headers.set(k, v) }, 'ccm.example:8443');
     const csp = headers.get('Content-Security-Policy');
     assert.doesNotMatch(csp, /unsafe-eval/);
+    assert.doesNotMatch(csp, /(^|; )sandbox /);
     assert.match(csp, /script-src 'self'(;|$)/);
     assert.equal(headers.get('X-Frame-Options'), 'DENY');
     assert.equal(headers.get('Access-Control-Allow-Origin'), undefined);
