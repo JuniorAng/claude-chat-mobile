@@ -1,6 +1,12 @@
 // helpers: tests/helpers/playwright.ts
 
-import { test, expect } from '@playwright/test';
+import { test, expect, type Locator, type Page } from '@playwright/test';
+
+// 过程组把连续的工具卡收进一个默认收起的 details（app/process-group.js）：点卡内 summary 前先展开所属组。
+async function openProcessGroup(page: Page, card: Locator) {
+  const group = card.locator('xpath=ancestor-or-self::details[contains(@class,"process-group")]');
+  if (await group.count()) await group.first().evaluate(n => { n.open = true; });
+}
 import { ensureComposerReady, expectNoBrowserErrors, gotoMock, sendChatMessage, waitForIdle } from '../../helpers/playwright';
 import { ANOTHER_WORKSPACE, openSessionsSidebar, openWorkspaceSession } from '../../helpers/sidebar-ui';
 
@@ -145,6 +151,7 @@ test.describe('P0 日常零 token Mock UI 回归', () => {
     await expect(page.locator('#messages')).toContainText('出错：mock permission turn failed');
     const failedCard = page.locator('details.toolcard').filter({ hasText: 'run_command' }).last();
     await expect(failedCard.locator('.t-status')).toHaveAttribute('aria-label', '出错');
+    await openProcessGroup(page, failedCard);
     await failedCard.locator('summary').click();
     await expect(failedCard.locator('.t-out')).toContainText('mock permission turn failed');
 

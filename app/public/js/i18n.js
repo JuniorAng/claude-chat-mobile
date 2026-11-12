@@ -655,6 +655,7 @@ export const EN_DICT = Object.freeze({
   '工具执行已因本轮错误停止': 'Tool execution stopped by an error this turn',
   '已随停止取消，未发送': 'Cancelled with the stop — not sent',
   '进行中': 'In progress',
+  '思考': 'Thinking',
   'draw.io 编辑器': 'draw.io editor',
   '这个编辑器需要更宽的屏幕；已改用源码编辑': 'This editor needs a wider screen; switched to source editing',
   '已放弃未保存的修改': 'Discarded unsaved changes',

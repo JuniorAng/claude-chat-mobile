@@ -87,6 +87,9 @@ test.describe('P0 日常零 token Mock UI 回归', () => {
     await expect(page.locator('#messages')).toContainText('出错：mock question turn failed');
     const failedQuestionCard = page.locator('details.toolcard').filter({ hasText: 'AskUserQuestion' }).last();
     await expect(failedQuestionCard.locator('.t-status')).toHaveAttribute('aria-label', '出错');
+    // 过程组默认在回合结束后收起：卡片本身仍可点开，但要先确认它所在的组是展开的。
+    const owningGroup = failedQuestionCard.locator('xpath=ancestor-or-self::details[contains(@class,"process-group")]');
+    if (await owningGroup.count()) await owningGroup.first().evaluate(n => { n.open = true; });
     await failedQuestionCard.locator('summary').click();
     await expect(failedQuestionCard.locator('.t-out')).toContainText('mock question turn failed');
 
