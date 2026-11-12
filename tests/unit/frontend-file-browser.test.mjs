@@ -414,12 +414,22 @@ test('drawio 渲染后的第二道硬化：事件属性与 javascript: URL 都�
   assert.equal(isDangerousDrawioAttr('href', '#anchor'), false);
   assert.equal(isDangerousDrawioAttr('src', 'data:image/png;base64,AA'), false);
   assert.equal(isDangerousDrawioAttr('data-href', 'javascript:alert(1)'), false, '只认真正会执行的三个属性名');
+  // 浏览器解析 URL 前会剥掉 C0 控制符与空白；只看原串的正则会漏
+  assert.equal(isDangerousDrawioAttr('href', '\u0001javascript:alert(1)'), true);
+  assert.equal(isDangerousDrawioAttr('href', '\u0000javascript:alert(1)'), true);
+  assert.equal(isDangerousDrawioAttr('href', 'java\tscript:alert(1)'), true);
+  assert.equal(isDangerousDrawioAttr('href', 'JaVa\nScRiPt:alert(1)'), true);
 
   const removed = [];
   const el = { attributes: [{ name: 'onclick', value: 'x' }, { name: 'href', value: 'javascript:y' }, { name: 'fill', value: '#fff' }],
     removeAttribute(name) { removed.push(name); } };
   assert.equal(hardenDrawioDom({ querySelectorAll: sel => (sel === '*' ? [el] : []) }), 2);
   assert.deepEqual(removed, ['onclick', 'href']);
+
+  // style / SMIL 是后置改写点：viewer 渲染完还要再拆一遍
+  const style = { remove() { this.removed = true; } };
+  assert.equal(hardenDrawioDom({ querySelectorAll: sel => (sel === '*' ? [] : [style]) }), 1);
+  assert.equal(style.removed, true, '<style>/动画元素没被拆掉');
   assert.equal(hardenDrawioDom(null), 0, '没有 DOM（旧调用方/测试桩）时不能抛');
 });
 

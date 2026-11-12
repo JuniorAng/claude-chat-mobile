@@ -66,12 +66,24 @@ export function drawioEmbedJson(xml) {
 // DOMPurify 第二道）。CSP 已经挡住脚本执行（script-src 'self'，无 unsafe-inline）与网络外带
 // （default-src / img-src 'self'），这里再把能在 DOM 里留后手的节点、事件属性与 javascript: URL
 // 拆掉——纵深防御不依赖单一控制。返回值只用于测试/诊断。
-const DANGEROUS_DRAWIO_TAGS = 'script,iframe,object,embed,meta,base,link';
+//
+// SMIL（animate/set/discard…）也是攻击面：它能在我们的检查【之后】改写属性（把 href 改成
+// javascript:）。viewer 的 SVG 用不到动画，直接拆掉。
+const DANGEROUS_DRAWIO_TAGS = 'script,iframe,object,embed,meta,base,link,style,animate,set,animateTransform,animateMotion,discard';
+
+// URL 属性只认会执行的三个名字。判定前先按浏览器解析 URL 的口径剥掉 C0 控制符与空白：
+// `\x01javascript:` / `java\tscript:` 在地址栏里照样是 javascript:，而正则若只看原串会漏掉。
+// 用逐字符过滤而不是正则：no-control-regex 不许把控制符写进字符类。
+const normalizeUrlForSchemeCheck = value => {
+  let out = '';
+  for (const ch of String(value || '')) if (ch.charCodeAt(0) > 0x20) out += ch;
+  return out.toLowerCase();
+};
 
 export function isDangerousDrawioAttr(name, value) {
   const n = String(name || '').toLowerCase();
   if (n.startsWith('on')) return true;
-  return /^(href|src|xlink:href)$/.test(n) && /^\s*javascript:/i.test(String(value || ''));
+  return /^(href|src|xlink:href)$/.test(n) && normalizeUrlForSchemeCheck(value).startsWith('javascript:');
 }
 
 export function hardenDrawioDom(root) {

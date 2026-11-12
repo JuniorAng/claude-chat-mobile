@@ -62,10 +62,11 @@ export function createDrawioEditorBridge({
   function handle(event) {
     if (!frame || event?.source !== frame.contentWindow) return;
     // sandbox 之后 opaque origin 报字符串 "null"；部分浏览器不会把 sandbox 反映到 postMessage 的
-    // origin 上，报的就是本页 origin。两者之外一律丢弃（多一层与 source 同向的判据）。
+    // origin 上，报的就是本页 origin。两种之外一律丢弃——包括 origin 缺失/空串（fail closed：
+    // 真实浏览器事件里 origin 恒为非空字符串，缺省只可能来自非 postMessage 调用）。
     const origin = event?.origin;
     const here = globalThis.location?.origin;
-    if (origin && origin !== 'null' && origin !== here) return;
+    if (typeof origin !== 'string' || (origin !== 'null' && origin !== here)) return;
     let message;
     try { message = typeof event.data === 'string' ? JSON.parse(event.data) : event.data; } catch { return; }
     if (!message || typeof message !== 'object') return;

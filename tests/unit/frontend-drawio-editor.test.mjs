@@ -48,7 +48,7 @@ test('桥：configure → configure，init → load，save → files:write，exi
   const host = documentRef.createElement('div');
   bridge.open({ host, xml: '<mxfile/>', name: 'a.drawio', baseHash: 'h', cwd: '/w', relPath: 'a.drawio' });
   const frame = host.children.at(-1);
-  const send = data => documentRef._listeners.at(-1)({ data: JSON.stringify(data), source: frame.contentWindow });
+  const send = data => documentRef._listeners.at(-1)({ data: JSON.stringify(data), source: frame.contentWindow, origin: 'null' });
   const lastPost = () => postsTo(frame).at(-1);
 
   send({ event: 'configure' });
@@ -64,7 +64,7 @@ test('桥：configure → configure，init → load，save → files:write，exi
 
   bridge.open({ host, xml: '<mxfile/>', name: 'b.drawio', baseHash: 'h9', cwd: '/w', relPath: 'b.drawio' });
   const frame2 = host.children.at(-1);
-  documentRef._listeners.at(-1)({ data: JSON.stringify({ event: 'exit' }), source: frame2.contentWindow });
+  documentRef._listeners.at(-1)({ data: JSON.stringify({ event: 'exit' }), source: frame2.contentWindow, origin: 'null' });
   assert.equal(exited, 1);
 });
 
@@ -83,7 +83,7 @@ test('桥：保存冲突不回 onSaved、编辑器保持打开并报错', async 
   const host = documentRef.createElement('div');
   bridge.open({ host, xml: '<mxfile/>', name: 'a.drawio', baseHash: 'h', cwd: '/w', relPath: 'a.drawio' });
   const frame = host.children.at(-1);
-  documentRef._listeners.at(-1)({ data: JSON.stringify({ event: 'save', xml: '<mxfile/>' }), source: frame.contentWindow });
+  documentRef._listeners.at(-1)({ data: JSON.stringify({ event: 'save', xml: '<mxfile/>' }), source: frame.contentWindow, origin: 'null' });
   await new Promise(setImmediate);
   assert.equal(saved, 0);
   assert.equal(exited, 0);
@@ -98,9 +98,9 @@ test('桥：来自别的 window 的消息、非 JSON、未知 event 一律忽略
   bridge.open({ host, xml: '<mxfile/>', name: 'a.drawio', baseHash: 'h', cwd: '/w', relPath: 'a.drawio' });
   const frame = host.children.at(-1);
   const listener = documentRef._listeners.at(-1);
-  listener({ data: 'not json', source: frame.contentWindow });
-  listener({ data: JSON.stringify({ event: 'unknown' }), source: frame.contentWindow });
-  listener({ data: JSON.stringify({ event: 'save', xml: '<x/>' }), source: { other: true } });
+  listener({ data: 'not json', source: frame.contentWindow, origin: 'null' });
+  listener({ data: JSON.stringify({ event: 'unknown' }), source: frame.contentWindow, origin: 'null' });
+  listener({ data: JSON.stringify({ event: 'save', xml: '<x/>' }), source: { other: true }, origin: 'null' });
   assert.equal(bridge.isOpen(), true);
 });
 
@@ -113,6 +113,8 @@ test('桥：source 对上但 origin 是外域时也不处理（sandbox 下合法
   const source = host.children.at(-1).contentWindow;
   bridge.handle({ data: JSON.stringify({ event: 'save', xml: '<x/>' }), source, origin: 'https://evil.example' });
   assert.deepEqual(writes, [], '外域 origin 的消息被当成编辑器发来的');
+  bridge.handle({ data: JSON.stringify({ event: 'save', xml: '<x/>' }), source });
+  assert.deepEqual(writes, [], '没有 origin 的消息必须 fail closed');
   bridge.handle({ data: JSON.stringify({ event: 'save', xml: '<x/>' }), source, origin: 'null' });
   assert.equal(writes.length, 1, 'opaque origin（sandbox）的消息必须照常处理');
 });
@@ -129,7 +131,7 @@ test('桥：保存回执迟到 + 已换文件：不把 A 的结果套到 B 上',
   });
   const host = documentRef.createElement('div');
   bridge.open({ host, xml: '<mxfile id="a"/>', name: 'a.drawio', baseHash: 'ha', cwd: '/w', relPath: 'a.drawio' });
-  bridge.handle({ data: JSON.stringify({ event: 'save', xml: '<mxfile id="a2"/>' }), source: host.children.at(-1).contentWindow });
+  bridge.handle({ data: JSON.stringify({ event: 'save', xml: '<mxfile id="a2"/>' }), source: host.children.at(-1).contentWindow, origin: 'null' });
   // A 还没回执，用户关掉 A 打开了 B；A 的回执这时才到
   bridge.open({ host, xml: '<mxfile id="b"/>', name: 'b.drawio', baseHash: 'hb', cwd: '/w', relPath: 'b.drawio' });
   ack({ ok: true, contentHash: 'ha2' });
