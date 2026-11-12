@@ -14,7 +14,7 @@
 //
 // 【为什么不包 widget】图表是输出本身，不是过程痕迹；收进组等于把结果藏起来。
 // 【为什么不包 tool_result】它跟着自己的工具卡走（写回卡上的 .t-out），独立成项只会让计数翻倍。
-import { classifyProcessNode, summarizeProcessGroup } from '../logic/process-group.js';
+import { classifyProcessNode, isTransparentNode, summarizeProcessGroup } from '../logic/process-group.js';
 
 
 export function createProcessGroups({ el, now = () => Date.now() } = {}) {
@@ -57,8 +57,13 @@ export function createProcessGroups({ el, now = () => Date.now() } = {}) {
   // 投递一个节点。desc 缺省 = 断点（正文/图表/气泡都走这条）。
   // 返回 { grouped }：调用方据此知道自己要不要额外做事（现在没有，留给将来）。
   function append(target, node, desc = null) {
-    const type = classifyProcessNode(desc);
     if (!target || !node) return { grouped: false };
+    // 图表跟着自己的工具卡走：投到当前所在的容器（组开着的就进组），组边界不变。
+    if (isTransparentNode(desc)) {
+      (group ? group.body : target).appendChild(node);
+      return { grouped: Boolean(group) };
+    }
+    const type = classifyProcessNode(desc);
     if (!type) {
       closeGroup();
       pending = null;

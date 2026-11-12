@@ -2780,7 +2780,7 @@ import { createKeyboardInset } from './app/keyboard-inset.js';
         if (widgetNode) sa.body.appendChild(widgetNode);
       } else if (!isMergedSpawn) {
         appendMessage(card, { kind: 'tool_use', name: p.name });
-        if (widgetNode) appendMessage(widgetNode);
+        if (widgetNode) appendMessage(widgetNode, { kind: 'widget' });
       }
       scrollBottom();
       if (isSubagentPayload(p)) setBusyFromSubagentEvent(ev); else setBusyFromStreamEvent(ev);
@@ -6261,7 +6261,7 @@ import { createKeyboardInset } from './app/keyboard-inset.js';
         if (!histMergedSpawn) {
           appendNode(card, msg, { kind: 'tool_use', name: msg.name });
           const widgetNode = msg.widget ? widgets.render(msg.widget) : null; // 同 live：图紧跟工具卡
-          if (widgetNode) appendNode(widgetNode, msg);
+          if (widgetNode) appendNode(widgetNode, msg, { kind: 'widget' });
         }
         return;
       }

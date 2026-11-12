@@ -8,6 +8,9 @@ import { formatCliDuration } from './bg-tasks.js';
 
 const PROCESS_KINDS = new Set(['thinking', 'tool_use', 'subagent-card']);
 const PROCESS_TYPE_BY_KIND = { thinking: 'thinking', tool_use: 'tool', 'subagent-card': 'agent' };
+// widget 图必须【紧跟在自己的工具卡后面】（E2E P0-05x 钉的契约：cards.nth(1).nextElementSibling 是 figure）。
+// 所以它不算断点、也不算过程项：原样投递到当前所在容器里，组因此不拆开卡与图。
+const TRANSPARENT_KINDS = new Set(['widget']);
 
 // 返回 'thinking' | 'tool' | 'agent' = 收进组；null = 这是正文/图表/其它，分组在这里断开。
 // tool_result 刻意不收：它跟着自己的工具卡走（写回卡上的 .t-out），独立成项只会让计数翻倍。
@@ -15,6 +18,11 @@ export function classifyProcessNode(desc) {
   const kind = desc?.kind;
   if (!PROCESS_KINDS.has(kind)) return null;
   return PROCESS_TYPE_BY_KIND[kind];
+}
+
+// widget 不是过程项，也不断组：它跟着自己的卡走。
+export function isTransparentNode(desc) {
+  return TRANSPARENT_KINDS.has(desc?.kind);
 }
 
 // 组头文案：思考 1 · Bash 2 · Read 1 · 14s

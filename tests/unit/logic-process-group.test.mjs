@@ -2,7 +2,7 @@
 // 纯函数：输入是描述对象（不是 DOM 节点），这样它能留在 logic/ 并被 node:test 直接跑。
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { classifyProcessNode, summarizeProcessGroup } from '../../app/public/js/logic.js';
+import { classifyProcessNode, isTransparentNode, summarizeProcessGroup } from '../../app/public/js/logic.js';
 import { setLang } from '../../app/public/js/i18n.js';
 
 test('classifyProcessNode：思考/工具/子 agent 收进组，正文与图表断开', () => {
@@ -63,4 +63,10 @@ test('summarizeProcessGroup：英文界面走词典（不残留中文）', () =>
     // i18n.js 的 t() 在 en 下查 EN_DICT；缺条目会静默回落中文，所以这条同时守着词典条目真的在。
     assert.match(summarizeProcessGroup([{ type: 'thinking' }], { durationMs: 14000 }).text, /^[A-Za-z]+ 1 · 14s$/);
   } finally { setLang('zh'); }
+});
+
+test('isTransparentNode：图表既不是过程项也不断组（它跟着自己的工具卡走）', () => {
+  assert.equal(isTransparentNode({ kind: 'widget' }), true);
+  assert.equal(isTransparentNode({ kind: 'tool_use' }), false);
+  assert.equal(isTransparentNode(null), false);
 });

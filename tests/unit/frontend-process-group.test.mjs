@@ -143,3 +143,30 @@ test('正文断开之后，前一组仍归本回合管：endRun 照样收起它'
   groups.endRun();
   assert.equal(group.open, false, '正文断开后的组没有被回合结束收起——用户会一直看着一堆展开的过程');
 });
+
+test('图表跟在工具卡后面：不拆组，也不把卡和图标拆到两处', () => {
+  const groups = createProcessGroups({ el: fakeEl, now: () => 1000 });
+  const host = fakeEl('<main></main>');
+  const card = fakeEl('<details class="toolcard"></details>');
+  const widget = fakeEl('<figure class="widget-card"></figure>');
+  groups.append(host, card, { kind: 'tool_use', name: 'mcp__visualize__show_widget' });
+  groups.append(host, widget, { kind: 'widget' });
+  // 单条过程项时组还没建：图仍紧跟卡
+  assert.equal(host.children.at(-1), widget);
+  assert.equal(host.children.at(-2), card);
+});
+
+test('组已开时，图表进组并紧跟自己的卡（而不是插到组外）', () => {
+  const groups = createProcessGroups({ el: fakeEl, now: () => 1000 });
+  const host = fakeEl('<main></main>');
+  const c1 = fakeEl('<details class="toolcard"></details>');
+  const c2 = fakeEl('<details class="toolcard"></details>');
+  const widget = fakeEl('<figure class="widget-card"></figure>');
+  groups.append(host, c1, { kind: 'tool_use', name: 'Bash' });
+  groups.append(host, c2, { kind: 'tool_use', name: 'mcp__visualize__show_widget' });
+  groups.append(host, widget, { kind: 'widget' });
+  const group = host.children.find(c => c.className.includes('process-group'));
+  const body = group.querySelector('.pg-body');
+  assert.equal(body.children.at(-1), widget, '图没有紧跟它自己的卡（卡与图被拆开了）');
+  assert.equal(body.children.at(-2), c2);
+});
