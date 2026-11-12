@@ -655,6 +655,7 @@ export const EN_DICT = Object.freeze({
   '工具执行已因本轮错误停止': 'Tool execution stopped by an error this turn',
   '已随停止取消，未发送': 'Cancelled with the stop — not sent',
   '进行中': 'In progress',
+  '预览已禁用脚本与外链图片；要改就点「编辑」': 'Preview disables scripts and remote images; tap Edit to change it.',
   '名称': 'Name',
   '修改时间': 'Modified',
   '大小': 'Size',

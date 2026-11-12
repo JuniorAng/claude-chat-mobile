@@ -12,9 +12,11 @@ import test from 'node:test';
 import { createAppContext } from '../../app/public/js/app/context.js';
 import { createFileBrowser } from '../../app/public/js/app/file-browser.js';
 
-function fakeEl() {
+function fakeEl(tag = 'div') {
   const classes = new Set();
+  const attrs = new Map();
   const el = {
+    tagName: String(tag).toUpperCase(),
     onclick: null,
     textContent: '',
     className: '',
@@ -22,6 +24,11 @@ function fakeEl() {
     html: '',
     children: [],
     appendChild(child) { el.children.push(child); return child; },
+    append(...nodes) { nodes.forEach(n => el.children.push(n)); },
+    setAttribute(name, value) { attrs.set(name, String(value)); if (name === 'class') el.className = String(value); },
+    getAttribute(name) { return attrs.has(name) ? attrs.get(name) : null; },
+    querySelector() { return null; },
+    querySelectorAll() { return []; },
     set innerHTML(_v) { el.html = _v; el.children = []; },
     get innerHTML() { return el.html; },
     classList: {
@@ -42,7 +49,7 @@ function harness(options = {}) {
     fileBrowseSortGroup: fakeEl(), fileBrowseSortKey: fakeEl(), fileBrowseSortDir: fakeEl(),
   };
   const head = fakeEl(); // 按需插入的 CodeMirror <script> 落在这里
-  const context = createAppContext({ dom, dependencies: { document: { createElement: () => fakeEl(), head } } });
+  const context = createAppContext({ dom, dependencies: { document: { createElement: tag => fakeEl(tag), head } } });
   const sent = []; // { event, payload, ack }：回执由用例决定何时、按什么顺序放行
   const emit = (event, payload, ack) => sent.push({ event, payload, ack });
   context.setSocket({
@@ -278,4 +285,51 @@ test('排序状态在重新打开面板时复位为名称升序', () => {
   ctl.open('/w');
   assert.equal(dom.fileBrowseSortKey.value, 'name');
   assert.equal(dom.fileBrowseSortDir.textContent, '↑');
+});
+
+test('index.html 走 iframe 预览：sandbox 空值，正文不进父页 DOM', async () => {
+  const { ctl, dom, head, pending, rowNamed } = harness();
+  ctl.open('/w');
+  pending('browse:list')[0].ack({ ok: true, truncated: false, totalCount: 1,
+    entries: [{ name: 'index.html', kind: 'file', size: 26, mtime: 1 }] });
+  rowNamed('index.html').onclick();
+  for (const script of head.children) script.onload();   // CodeMirror 整包到齐，正文才会渲染（预览并不需要 CM）
+  pending('browse:read')[0].ack({ ok: true, content: '<script>alert(1)</script>', bytesRead: 26, truncated: false, totalSize: 26, contentHash: 'h' });
+  await new Promise(setImmediate);
+  const frame = dom.fileBrowseBody.children.at(-1);
+  assert.equal(frame.tagName, 'IFRAME');
+  assert.equal(frame.getAttribute('sandbox'), '');
+  assert.equal(frame.srcdoc, '<script>alert(1)</script>');
+  assert.equal(dom.fileBrowseBody.innerHTML.includes('<script>'), false, '文件内容被写进了父页 DOM');
+});
+
+test('截断的 .html 走源码，不出 iframe', async () => {
+  const { ctl, dom, head, pending, rowNamed } = harness();
+  ctl.open('/w');
+  pending('browse:list')[0].ack({ ok: true, truncated: false, totalCount: 1,
+    entries: [{ name: 'big.html', kind: 'file', size: 999, mtime: 1 }] });
+  rowNamed('big.html').onclick();
+  for (const script of head.children) script.onload();
+  pending('browse:read')[0].ack({ ok: true, content: '<h1>x</h1>', bytesRead: 11, truncated: true, totalSize: 999 });
+  await new Promise(setImmediate);
+  assert.notEqual(dom.fileBrowseBody.children.at(-1).tagName, 'IFRAME');
+});
+
+test('预览 A 之后切到 B：previewKind 复位，B 不被 A 的预览器接住', async () => {
+  const { ctl, dom, head, pending, rowNamed } = harness();
+  ctl.open('/w');
+  pending('browse:list')[0].ack({ ok: true, truncated: false, totalCount: 2, entries: [
+    { name: 'a.html', kind: 'file', size: 12, mtime: 1 }, { name: 'b.js', kind: 'file', size: 4, mtime: 2 },
+  ] });
+  rowNamed('a.html').onclick();
+  for (const script of head.children) script.onload();
+  pending('browse:read')[0].ack({ ok: true, content: '<h1>a</h1>', bytesRead: 12, truncated: false, totalSize: 12, contentHash: 'h' });
+  await new Promise(setImmediate);
+  assert.equal(dom.fileBrowseBody.children.at(-1).tagName, 'IFRAME');
+  await ctl.back();
+  rowNamed('b.js').onclick();
+  pending('browse:read')[1].ack({ ok: true, content: 'x=1\n', bytesRead: 4, truncated: false, totalSize: 4, contentHash: 'h2' });
+  await new Promise(setImmediate);
+  assert.equal(dom.fileBrowseBody.children.some(c => c.tagName === 'IFRAME'), false,
+    '切到 .js 后仍挂着上一个文件的 HTML 预览');
 });

@@ -84,7 +84,7 @@ export function createFileBrowser(context, {
   let editMode = 'view';   // 'view' | 'editing'；离开 content 模式（back/loadContent 新文件）即复位
   let baseHash = null;     // files:write 的冲突基线——来自最近一次 browse:read 或 files:write 成功后的 contentHash
   let editOnDemand = false; // 行多的纯文本：查看留在 <pre>，点「编辑」才挂 CM（验收 O103，见 renderContent）
-  let markdownPreview = false; // content 视图当前是渲染后的 markdown（CM 未挂载），编辑/保存后回到这里
+  let previewKind = null; // null | 'markdown' | 'html' | 'mermaid' | 'drawio'；编辑/保存后回到同一种预览
   let codeMirrorLoad = null; // CM 脚本的按需加载，见 loadCodeMirror
   let codeMirrorReady = false; // 整包（核心＋全部 mode）都执行完才算；核心先执行，全局在不等于 mode 到齐
   let targetLine = null;   // 文件链接带的行号，定位到后清掉
@@ -379,7 +379,7 @@ export function createFileBrowser(context, {
     cmInstance?.setValue(contentText); // 撤销未保存的改动，回到加载/上次保存成功时的内容
     editMode = 'view';
     hideSaveError();
-    if (markdownPreview) renderMarkdownPreview();
+    if (previewKind) renderPreview();
     else cmInstance?.setOption('readOnly', 'nocursor');
     syncEditButtons();
   }
@@ -402,7 +402,7 @@ export function createFileBrowser(context, {
       contentText = newContent; // 基线随保存前移：取消编辑不会丢刚保存成功的内容
       baseHash = response.contentHash;
       editMode = 'view';
-      if (markdownPreview) renderMarkdownPreview();
+      if (previewKind) renderPreview();
       else cmInstance.setOption('readOnly', 'nocursor');
       syncEditButtons();
     });
@@ -420,6 +420,37 @@ export function createFileBrowser(context, {
       lineWrapping: true,
       viewportMargin: Infinity,
     });
+  }
+
+  // 按扩展名决定预览器。html/htm → 沙箱 iframe；md 系列 → 渲染后的 markdown。
+  function previewableKind(name) {
+    const dot = String(name || '').lastIndexOf('.');
+    const ext = dot < 0 ? '' : name.slice(dot + 1).toLowerCase();
+    if (ext === 'html' || ext === 'htm') return 'html';
+    if (ext === 'md' || ext === 'markdown' || ext === 'mdx') return 'markdown';
+    return null;
+  }
+
+  function renderPreview() {
+    if (previewKind === 'html') renderHtmlPreview();
+    else renderMarkdownPreview();
+  }
+
+  // HTML 只进 iframe 的 srcdoc，绝不进父页 innerHTML。sandbox 留空 = 无 allow-scripts、无 allow-same-origin：
+  // 脚本被拦，且它读不到 CCM 的 localStorage（token 在那里）。样式照常生效，相对图片/外链会被 CSP 拦。
+  function renderHtmlPreview() {
+    if (!dom.fileBrowseBody) return;
+    dom.fileBrowseBody.innerHTML = '';
+    cmInstance = null;
+    const notice = documentRef.createElement('div');
+    notice.className = 'px-4 py-1.5 text-[10px] text-ink-faint border-b border-line-soft';
+    notice.textContent = t('预览已禁用脚本与外链图片；要改就点「编辑」');
+    const frame = documentRef.createElement('iframe');
+    frame.className = 'w-full h-full border-0 bg-white';
+    frame.setAttribute('sandbox', '');
+    frame.setAttribute('data-testid', 'file-preview-html');
+    frame.srcdoc = contentText;
+    dom.fileBrowseBody.append(notice, frame);
   }
 
   // contentText 已经过注入的 renderMarkdown（marked + DOMPurify，含消息链路那套禁 label/form/style 的配置），
@@ -444,7 +475,7 @@ export function createFileBrowser(context, {
     if (!dom.fileBrowseBody) return;
     dom.fileBrowseBody.innerHTML = '';
     cmInstance = null;
-    markdownPreview = false;
+    previewKind = null;
     editMode = 'view';
     editOnDemand = false;
     baseHash = contentHash || null;
@@ -455,13 +486,14 @@ export function createFileBrowser(context, {
     // 但能不能编辑只看 baseHash：这类文件「编辑」照给，点了才挂 CM——那时的逐行建 DOM 是用户要编辑才付的，
     // 而只是看一眼的不付（验收 O103：几 KB 的 .txt 因行多不能编辑，256KB 的 .js 却能）。
     const highlighted = cmModeForFileName(fileName);
-    // markdown 一次性读全时直接渲染成 HTML（读文档不该看源码）；带行号的链接定位、截断/分页仍走源码视图，
+    // markdown / html 一次性读全时直接渲染（读文档不该看源码）；带行号的链接定位、截断/分页仍走源码视图，
     // 前者要按行滚动，后者渲染半篇没有意义。点「编辑」才挂 CM 显示源码，取消/保存后回到预览。
-    if (highlighted === 'text/markdown' && typeof renderMarkdown === 'function'
-      && !targetLine && !usedPagination && !truncated) {
-      markdownPreview = true;
+    const kind = previewableKind(fileName);
+    if (kind && !targetLine && !usedPagination && !truncated
+      && (kind !== 'markdown' || typeof renderMarkdown === 'function')) {
+      previewKind = kind;
       editOnDemand = Boolean(baseHash) && typeof CodeMirror !== 'undefined';
-      renderMarkdownPreview();
+      renderPreview();
       syncEditButtons();
       return;
     }
@@ -518,7 +550,7 @@ export function createFileBrowser(context, {
   // 否则上一个文件的「编辑」按钮会残留可见在列表视图里，或误挂着已失效的 baseHash。
   function resetEditState() {
     cmInstance = null;
-    markdownPreview = false;
+    previewKind = null;
     editMode = 'view';
     editOnDemand = false;
     baseHash = null;
