@@ -35,7 +35,11 @@ export function attachFolderDrag(handle, {
   let startOrder = [];
   let offset = 0; // 行中线 - 手指位置，拖起来那一刻量
 
-  const rootRows = () => [...panel.children].filter(n => n.dataset?.dirKind === 'connected');
+  // 项目分组后行不再直接挂在 #sessionPanel 下（可能在 .dir-group-body 里），所以按后代找。
+  // 顺序提交仍用整份清单（跨组的先后也要一起发），但移动只在同一组内进行——跨组拖动会让
+  // 分组成员与「最近活跃/更早」的判据打架，下一次整段重建就弹回去。
+  const rootRows = () => [...panel.querySelectorAll('[data-dir-kind="connected"]')];
+  const siblingRows = () => rootRows().filter(n => n.parentElement === row.parentElement);
   const blockOf = (head) => {
     const nodes = [head];
     for (let n = head.nextElementSibling; n && (n.classList.contains('subtree-container') || n.dataset?.dirKind === 'subfolder'); n = n.nextElementSibling) nodes.push(n);
@@ -97,9 +101,9 @@ export function attachFolderDrag(handle, {
   function onMove(ev) {
     if (!row.isConnected) return onAbort();
     const y = ev.clientY + offset;
-    const others = rootRows().filter(n => n !== row);
+    const others = siblingRows().filter(n => n !== row);
     const index = others.filter(n => midY(n) < y).length;
-    const current = rootRows().indexOf(row); // 也等于排在它前面的 others 个数
+    const current = siblingRows().indexOf(row); // 也等于排在它前面的 others 个数
     if (index !== current) {
       const nodes = blockOf(row);
       if (index < others.length) others[index].before(...nodes);

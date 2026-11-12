@@ -27,7 +27,7 @@ export function normalizeProjects(payload) {
   const raw = Array.isArray(payload?.projects) ? payload.projects : null;
   if (!raw) {
     const dirs = Array.isArray(payload?.dirs) ? payload.dirs : [];
-    return dirs.filter(d => typeof d === 'string' && d).map(d => ({ key: d, root: d, label: null, kind: 'connected' }));
+    return dirs.filter(d => typeof d === 'string' && d).map(d => ({ key: d, root: d, label: null, kind: 'connected', lastActiveAt: null }));
   }
   const out = [];
   const seen = new Set();
@@ -35,14 +35,51 @@ export function normalizeProjects(payload) {
     if (typeof p?.key !== 'string' || !p.key || seen.has(p.key)) continue;
     seen.add(p.key);
     const kind = KINDS.has(p.kind) ? p.kind : 'connected';
+    const lastActiveAt = Number(p.lastActiveAt);
     out.push({
       key: p.key,
       root: typeof p.root === 'string' && p.root ? p.root : p.key,
       label: typeof p.label === 'string' && p.label ? p.label : null,
       kind,
+      // 最近一次会话活动（ms）。旧服务端 / E2E mock 没有这个字段 → null，抽屉退回不分组。
+      lastActiveAt: Number.isFinite(lastActiveAt) && lastActiveAt > 0 ? lastActiveAt : null,
     });
   }
   return out;
+}
+
+// 「最近活跃」= 今天或昨天有会话活动（按本地日历日算，不是 48 小时窗口：用户说的是「今天和昨天」）。
+export const PROJECT_ACTIVE_DAYS = 2;
+
+export function calendarDayDiff(nowMs, thenMs) {
+  const a = new Date(nowMs), b = new Date(thenMs);
+  return Math.round((Date.UTC(a.getFullYear(), a.getMonth(), a.getDate())
+    - Date.UTC(b.getFullYear(), b.getMonth(), b.getDate())) / 86_400_000);
+}
+
+export function isRecentlyActive(lastActiveAt, { now = Date.now(), days = PROJECT_ACTIVE_DAYS } = {}) {
+  const ms = Number(lastActiveAt);
+  if (!Number.isFinite(ms) || ms <= 0) return false;
+  return calendarDayDiff(now, Math.min(ms, now)) < days; // 时钟漂移后的「未来」按今天算
+}
+
+// 抽屉的项目分两组：最近活跃 / 更早。
+// 没有任何项目带 lastActiveAt（旧服务端、E2E mock 的旧载荷）时返回单组——DOM 与改动前逐字相同，
+// 既不让旧服务端凭空多出两个折叠头，也不给折叠态引入「内容藏在看不见的地方」这种回归。
+// forceRecent：当前 cwd / 有活实例的项目——人就坐在那里，算「正在用」，哪怕 transcript 很久没写。
+// （未读不在这里：很久没看 ≠ 最近活跃；它只让调用方强制展开所在的组。）
+export function groupProjectsByActivity(projects, { now = Date.now(), forceRecent = [] } = {}) {
+  const list = Array.isArray(projects) ? projects : [];
+  const hasActivity = list.some(p => Number.isFinite(Number(p?.lastActiveAt)) && Number(p.lastActiveAt) > 0);
+  if (!hasActivity) return [{ id: 'all', projects: list }];
+  const forced = new Set(forceRecent);
+  const recent = [], earlier = [];
+  for (const p of list) (isRecentlyActive(p.lastActiveAt, { now }) || forced.has(p.key) ? recent : earlier).push(p);
+  return [
+    ...(recent.length ? [{ id: 'recent', projects: recent }] : []),
+    ...(earlier.length ? [{ id: 'earlier', projects: earlier }] : []),
+    // 两组都空时也返回空数组：调用方照常画 0 节，不要造一个空组头
+  ];
 }
 
 // 「选文件夹」面板里服务端回的原因码 → 给人看的一句话（能不能加、为什么建不了、为什么没加上）。

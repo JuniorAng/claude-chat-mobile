@@ -161,6 +161,7 @@ import { createHistoryLoadGate } from './app/history-load-gate.js';
 import { createHistoryPrefetch } from './app/history-prefetch.js';
 import { createAgentEventDispatcher, createReplayBuffer } from './app/event-dispatch.js';
 import { createFileBrowser } from './app/file-browser.js';
+import { createDesktopRail } from './app/desktop-rail.js';
 import { createUnreadTracker } from './app/unread-tracker.js';
 import { createScrollToBottomController } from './app/scroll-to-bottom.js';
 import { createGitChangesPanel, createWorkspacePanel, renderPatchLines } from './app/git-changes.js';
@@ -297,6 +298,7 @@ import { createKeyboardInset } from './app/keyboard-inset.js';
     $, addBar: (...args) => addBar(...args), copyText, messagesEl, renderLiveLine, updateWorkspaceChangeBadge,
     getCurrentCwd: () => currentCwd, getLiveLine: () => liveLine,
     getViewingInstanceId: () => viewingInstanceId,
+    onStatusLine: p => desktopRail?.setStatusLine(p),
   });
   const { cliStatusBarEl, hideStatuslineWrap, renderStatusLine } = statuslineView;
   const permModeSelect = $('permModeSelect');  // 权限档切换器：选项/磁贴由 rebuildPermissionModeUi 按 SDK PermissionMode 填充
@@ -580,10 +582,15 @@ import { createKeyboardInset } from './app/keyboard-inset.js';
   // 服务告警的「忽略」（#301）：本机记住忽略到哪个指纹，状态在模块内，此处只持句柄。
   const noticeDismissals = createNoticeDismissals();
   let expandedDirs = new Set();         // 工作区面板中展开的目录（初始空，首 instances 事件填充；切 cwd 时加入新目录）
+  // 工作区面板控制器在文件/改动两个子控制器都建好之后才赋值；setCurrentCwd 可能在它之前被调用，
+  // 所以这里先声明成 null，调用点用可选链（TDZ 不会因 ?. 变成安全）。
+  let workspacePanel = null;
   // UX-007：当前文件夹只在切到它的那一刻自动展开一次，之后听用户的：重建抽屉不再碰展开集合（2026-11-04）。
   function setCurrentCwd(cwd) {
     if (cwd && cwd !== currentCwd) expandedDirs.add(cwd);
     currentCwd = cwd;
+    // 宽屏右栏跟着当前工作区走；窄屏 ensure 自己 no-op，不会在手机上调文件接口。
+    workspacePanel?.ensure(cwd);
   }
   const SESSION_PANEL_REVALIDATE_MS = 12_000;
   // P3：面板"结构性"指纹（dirs 集合 + viewingInstanceId）；只有这两者变化才全量重建整个面板
@@ -1204,6 +1211,9 @@ import { createKeyboardInset } from './app/keyboard-inset.js';
     );
   };
   const setupPush = notifications.setup;
+  // 桌面右栏（≥1280px）：声明先于 taskStatus，任务快照变化时经闭包回调重画；
+  // 实例在 workspacePanel 之后创建（那时 appContext / projectsState 都已就绪）。
+  let desktopRail = null;
   const taskStatus = createTaskStatusController(appContext, {
     addBar,
     alertCue,
@@ -1211,6 +1221,7 @@ import { createKeyboardInset } from './app/keyboard-inset.js';
     createElement: el,
     haptic,
     notify,
+    onChange: () => desktopRail?.setTasks(taskStatus.snapshot()),
   });
   let onTaskProgress = taskStatus.onProgress;
   let hideTaskProgress = taskStatus.hideProgress;
@@ -4353,6 +4364,7 @@ import { createKeyboardInset } from './app/keyboard-inset.js';
     syncDashNoFolders(); // 首页开着时连上/断开了文件夹：引导跟着广播走，不等下次重画首页
     const prevInstances = instancesList;
     instancesList = Array.isArray(p?.instances) ? p.instances : [];
+    desktopRail?.setInstances(); // 右栏「其他工作区」跟着广播走（窄屏只是几行 textContent，CSS 已隐藏）
     outboxAfterTurn.tick(); // 排队的离线条目：目标会话这一轮结束了就续发下一条（O66）
     // 结算兜底（跨实例）：agent:event 层的 shouldDropAgentEvent 只放行当前查看实例的事件，非当前查看
     // 实例的「停止」结算事件会被丢弃、其 interruptPendingByInstance 挂起态无法经 system(p) 清位。这条
@@ -5249,7 +5261,7 @@ import { createKeyboardInset } from './app/keyboard-inset.js';
   // 「这一个新会话页」的标识：离线重放时同一页的几条并成一个会话、另开的一页各开各的（见 compose-page.js）
   const composePage = createComposePage();
   // 两个子控制器只管各自半边的数据；sheet 开合与 tab 切换归 workspacePanel 统一持有
-  const workspacePanel = createWorkspacePanel(appContext, {
+  workspacePanel = createWorkspacePanel(appContext, {
     closeSheet,
     openSheet,
     haptic,
@@ -5259,6 +5271,20 @@ import { createKeyboardInset } from './app/keyboard-inset.js';
   // #399：把手下拉走面板自己的 close（含未保存编辑丢弃确认），不要直接 closeSheet
   setGestureDismiss(workspaceModal, () => { void workspacePanel.close(); });
   const openWorkspacePanel = workspacePanel.open;
+  // 桌面右栏的三张信息卡。数据都来自已经在前端手里的 status_line / instances / task_status；
+  // 文件与改动两个 tab 不在这里重画，见 workspacePanel（宽屏下它就是右栏的下半截）。
+  desktopRail = createDesktopRail({
+    $,
+    el,
+    getInstancesList: () => instancesList,
+    getViewingInstanceId: () => viewingInstanceId,
+    projectsState,
+    onOpenInstance: instanceId => socket.emit('user:setViewing', { instanceId }),
+  });
+  desktopRail.setTasks(taskStatus.snapshot());
+  desktopRail.refresh();
+  // 窗口跨过 1280 时右栏才出现：内容得补一次，否则停在空文件列表上直到下次切会话。
+  window.addEventListener('resize', () => workspacePanel.ensure(currentCwd));
   // 流式期间正文反复重写 innerHTML，所以挂在 document 上；审批 sheet 里的计划正文走同一份渲染，一并覆盖
   document.addEventListener('click', event => {
     const link = event.target.closest('a[data-file-path]');
@@ -5705,6 +5731,8 @@ import { createKeyboardInset } from './app/keyboard-inset.js';
 
     // Clear stale status line and hide details row to prevent latency layout flashes
     hideStatuslineWrap();
+    // 右栏「当前会话」卡同理：切走后不能还挂着上一个会话的模型 / ctx。
+    desktopRail?.setStatusLine(null);
     pillDefaults?.classList.remove('hidden'); // 恢复底栏会话档摘要 chip（statusLine 隐藏时）
     if (tip) addBar(tip, 'text-ink-faint');
   }
