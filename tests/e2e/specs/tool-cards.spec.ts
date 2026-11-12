@@ -1,10 +1,22 @@
 // helpers: tests/helpers/playwright.ts
 
-import { test, expect } from '@playwright/test';
+import { test, expect, type Page, type Locator } from '@playwright/test';
 import { captureBrowserErrors, ensureComposerReady, expectNoBrowserErrors, gotoMock, sendChatMessage, waitForIdle, waitUntilConnected } from '../../helpers/playwright';
 import { MAIN_WORKSPACE, expandWorkspace, openSessionsSidebar, openWorkspaceSession } from '../../helpers/sidebar-ui';
 
 test.describe('P0 日常零 token Mock UI 回归', () => {
+  // 过程组会把连续的思考/工具卡收进一个默认收起的 details（见 app/process-group.js）。
+  // 卡片本身仍在，只是不再是 #messages 的直接子元素；需要点卡内 summary 的用例先展开所属组。
+  // 「主流层面的工具卡」：直接子元素，或过程组的直接成员。
+  // 刻意不数 subagent-card 内部的嵌套卡——那是子代理自己的工具，不是主流的。
+  const streamCards = (page: Page) => page.locator(
+    '#messages > details.toolcard, #messages > details.process-group > .pg-body > details.toolcard');
+
+  async function openOwningGroup(page: Page, card: Locator) {
+    const group = card.locator('xpath=ancestor-or-self::details[contains(@class,"process-group")]');
+    if (await group.count()) await group.first().evaluate(n => { n.open = true; });
+  }
+
   test('P0-05 工具调用卡片生命周期', async ({ page }) => {
     await gotoMock(page);
 
@@ -20,6 +32,7 @@ test.describe('P0 日常零 token Mock UI 回归', () => {
 
     // 2. 等待完成并展开第一个工具卡片。
     await waitForIdle(page);
+    await openOwningGroup(page, page.locator('details.toolcard').first());
     await page.locator('details.toolcard summary').first().click();
     await expect(page.locator('details.toolcard').first()).toHaveAttribute('open', '');
     await expect(page.locator('details.toolcard pre').first()).toContainText('utils/date.js');
@@ -32,6 +45,7 @@ test.describe('P0 日常零 token Mock UI 回归', () => {
     }
     await expect(page.locator('[data-testid="assistant-message"]').last()).toContainText('All tools executed cleanly');
 
+    await openOwningGroup(page, page.locator('details.toolcard').last());
     await page.locator('details.toolcard summary').last().click();
     const fullOutputButton = page.locator('[data-testid="tool-expand-full"]');
     await expect(fullOutputButton).toBeVisible();
@@ -49,6 +63,7 @@ test.describe('P0 日常零 token Mock UI 回归', () => {
     await sendChatMessage(page, 'test:tool');
     await expect(page.locator('details.toolcard')).toHaveCount(3, { timeout: 15_000 });
     await waitForIdle(page);
+    await openOwningGroup(page, page.locator('details.toolcard').last());
     await page.locator('details.toolcard summary').last().click();
     await page.locator('[data-testid="tool-expand-full"]').click();
     const card = page.locator('details.toolcard').last();
@@ -68,6 +83,7 @@ test.describe('P0 日常零 token Mock UI 回归', () => {
     await expect(page.locator('details.toolcard').nth(1)).toContainText('run_command');
 
     await waitForIdle(page);
+    await openOwningGroup(page, page.locator('details.toolcard').first());
     await page.locator('details.toolcard summary').nth(0).click();
     await page.locator('details.toolcard summary').nth(1).click();
     await expect(page.locator('details.toolcard').nth(0)).toContainText('read_file result: config.json');
@@ -109,8 +125,13 @@ test.describe('P0 日常零 token Mock UI 回归', () => {
     await expect(firstToolCard).toBeVisible({ timeout: 15_000 });
 
     await waitForIdle(page);
+    // 回合结束后过程组自动收起：工具的**输出**在组收起时就已不可见（这正是分组要的效果）。
+    // 先确认组是收起的，再展开组 + 展开卡片，输出才可见。
+    const owningGroup = firstToolCard.locator('xpath=ancestor-or-self::details[contains(@class,"process-group")]');
+    await expect(owningGroup).not.toHaveAttribute('open', '');
     await expect(page.getByText('Successfully read 124 lines from utils/date.js')).toBeHidden();
 
+    await openOwningGroup(page, firstToolCard);
     await firstToolCard.locator('summary').click();
     await expect(page.getByText('Successfully read 124 lines from utils/date.js')).toBeVisible();
 
@@ -130,11 +151,11 @@ test.describe('P0 日常零 token Mock UI 回归', () => {
     await expect(card.locator('.sa-title')).toContainText('已完成');
     await expect(card.locator('details.toolcard')).toHaveCount(1);
     await expect(card.locator('[data-testid="subagent-text"]')).toContainText('CSRF');
-    await expect(page.locator('#messages > details.thinking.msg-frame')).toHaveCount(0);
+    await expect(page.locator('#messages details.thinking.msg-frame')).toHaveCount(0);
 
     // 合卡：一次 Agent spawn 只留【一张】卡。旧行为是主流里通用工具卡（Agent · 描述）与
     // 子代理卡并排两张——数 subagent-card 恒等于 1，抓不到它，必须数主流里的通用工具卡。
-    await expect(page.locator('#messages > details.toolcard')).toHaveCount(0);
+    await expect(streamCards(page)).toHaveCount(0);
     // 合卡不得吞掉 spawn 工具自己的输入与结果：子代理的最终报告原本挂在那张通用卡的 .t-out 上，
     // 合卡后必须落到聚合卡里，否则「少一张卡」是靠丢结论换来的。
     // 定位到聚合卡【自己】的槽位：嵌套工具卡也有 .t-in/.t-out，裸 class 会撞 strict mode。
@@ -217,7 +238,8 @@ test.describe('P0 日常零 token Mock UI 回归', () => {
     // Workflow 的聚合卡是等首条子流事件才懒建的（预建会留下「🤖 workflow 已完成」空壳），
     // 此时通用工具卡早已 append 进主流，再摘掉它要动已插入的时间分隔行。故 Workflow 维持两张卡。
     // 这条断言是为了让「Workflow 还没合」变成显式契约——哪天合了它会红，提醒同步改这里。
-    await expect(page.locator('#messages > details.toolcard')).toHaveCount(1);
+    // 过程组把卡包进 details 后，卡不再是 #messages 的直接子元素；这里数「主流里可见的卡」，含组内。
+    await expect(streamCards(page)).toHaveCount(1);
     await expect(card.locator('.sa-title')).toContainText('workflow');
     await expect(card.locator('[data-testid="subagent-text"]')).toContainText('Five search agents');
     await expect(card.locator('details.toolcard')).toHaveCount(1);
@@ -254,6 +276,7 @@ test.describe('P0 日常零 token Mock UI 回归', () => {
     // Edit（t_fc_edit）：三行片段只中间一行变 → 行级 diff 应拆成 4 个独立 <pre>（同/删/增/同）。
     // 工具卡默认折叠（<details>），「预览变更」按钮在卡体内——须先展开卡片。
     const editCard = page.locator('[data-tool-name="Edit"]');
+    await openOwningGroup(page, editCard);
     await editCard.locator('summary').click();
     await editCard.locator('.tp-btn').click();
     const editBody = editCard.locator('.tp-body');
@@ -266,6 +289,7 @@ test.describe('P0 日常零 token Mock UI 回归', () => {
 
     // Write（t_fc_write）：无 old，维持既有「整块绿」——单个 <pre> 装全部新增内容，不逐行拆分。
     const writeCard = page.locator('[data-tool-name="Write"]');
+    await openOwningGroup(page, writeCard);
     await writeCard.locator('summary').click();
     await writeCard.locator('.tp-btn').click();
     const writeBody = writeCard.locator('.tp-body');
@@ -289,6 +313,7 @@ test.describe('P0 日常零 token Mock UI 回归', () => {
     await waitForIdle(page);
 
     const readCard = page.locator('[data-tool-name="Read"]');
+    await openOwningGroup(page, readCard);
     await readCard.locator('summary').click();
     await readCard.locator('.tp-btn').click();
     const readBody = readCard.locator('.tp-body');
@@ -339,7 +364,7 @@ test.describe('P0 日常零 token Mock UI 回归', () => {
     await expect(card.locator('.sa-title')).toContainText('code-reviewer');
     await expect(card.locator('.sa-title')).toContainText('已完成');
     // 合卡：历史侧同样不再为 Agent 工具单独留一张通用工具卡
-    await expect(page.locator('#messages > details.toolcard')).toHaveCount(0);
+    await expect(streamCards(page)).toHaveCount(0);
     // 与 live 同一口径：只显 description，不铺原始 JSON
     await expect(card.locator('> .t-in')).toHaveText('Review auth module');
     await expect(card.locator('> .t-in')).not.toContainText('subagent_type');

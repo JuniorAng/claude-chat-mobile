@@ -193,6 +193,15 @@ details > summary::-webkit-details-marker { display: none; }
    只降工具卡会留下更刺眼的断层——一屏里工具是轻行、思考却还是带边框的白卡片。 */
 .thinking { border-left: 1px solid var(--line); }
 .thinking .t-body { font-family: var(--font-read); font-style: italic; }
+/* 过程组：连续的思考 / 工具卡 / 子 agent 卡收在一个 details 里（见 app/process-group.js）。
+   组本身画一条 1px 竖线；组内条目各自的竖线去掉（pg-flatten），否则两条并排会变脏。
+   这是 A2「过程痕迹比正文轻」那条结论的直接延续——不进正文的视觉重量。 */
+.process-group { border-left: 1px solid var(--line); }
+.process-group .pg-flatten { border-left: 0 !important; }
+.process-group-head { color: var(--ink-faint); font-size: 10.5px; }
+.process-group[open] .pg-arrow { transform: rotate(90deg); }
+.process-group .pg-arrow { display: inline-block; transition: transform .12s ease; }
+
 
 .safe-bottom { padding-bottom: env(safe-area-inset-bottom); }
 .safe-top { padding-top: env(safe-area-inset-top); }

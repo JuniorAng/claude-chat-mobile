@@ -26,6 +26,7 @@ export * from './logic/general-nav.js';
 export * from './logic/about.js';
 export * from './logic/local-reset.js';
 export * from './logic/file-sort.js';
+export * from './logic/process-group.js';
 export * from './logic/message-time.js';
 export * from './logic/mirror.js';
 export * from './logic/models-effort.js';

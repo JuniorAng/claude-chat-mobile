@@ -115,7 +115,7 @@ test('formatCliSpinnerLine: sinceLastEventSec≥hint 追加「仍在等待响应
 test('formatCliSpinnerLine: sinceLastEventSec≥warn 追加「响应较慢…」且两级不叠加', () => {
   assert.equal(
     formatCliSpinnerLine({ verb: 'Stewing', elapsedSec: 90, sinceLastEventSec: 60 }),
-    '✻ Stewing… (90s · 响应较慢，可能是深度思考或网络问题)',
+    '✻ Stewing… (1m 30s · 响应较慢，可能是深度思考或网络问题)',
   );
   // thinking 段之后再追加提示
   assert.equal(
@@ -126,7 +126,7 @@ test('formatCliSpinnerLine: sinceLastEventSec≥warn 追加「响应较慢…」
       effort: 'xhigh',
       sinceLastEventSec: 75,
     }),
-    '✻ Musing… (90s · thinking with xhigh effort · 响应较慢，可能是深度思考或网络问题)',
+    '✻ Musing… (1m 30s · thinking with xhigh effort · 响应较慢，可能是深度思考或网络问题)',
   );
   // 不含 hint 文案
   assert.ok(
@@ -261,4 +261,23 @@ test('advanceThinkingClock: 超 gap 视为新 burst 不补空档', () => {
   assert.deepEqual(s, { ms: 500, lastTs: 20_000 });
   s = advanceThinkingClock(s, 20_300); // 新 burst 内继续累计
   assert.deepEqual(s, { ms: 800, lastTs: 20_300 });
+});
+
+// 秒表超过 1 分钟就升级成 m/s：3725s 这种总秒数在手机上一行读不出来。
+test('formatCliSpinnerLine: 超过 1 分钟用 m/s，超过 1 小时用 h/m/s', () => {
+  assert.equal(formatCliSpinnerLine({ verb: 'Stewing', elapsedSec: 75 }), '✻ Stewing… (1m 15s)');
+  assert.equal(formatCliSpinnerLine({ verb: 'Stewing', elapsedSec: 180 }), '✻ Stewing… (3m 0s)');
+  assert.equal(formatCliSpinnerLine({ verb: 'Stewing', elapsedSec: 3725 }), '✻ Stewing… (1h 2m 5s)');
+  assert.equal(formatCliSpinnerLine({ verb: 'Stewing', elapsedSec: 59 }), '✻ Stewing… (59s)');
+});
+
+test('formatCliSpinnerLine: thought for 同样按时长升级（保持英文文案）', () => {
+  assert.equal(
+    formatCliSpinnerLine({ verb: 'Stewing', elapsedSec: 75, thinking: { state: 'done', ms: 75000 } }),
+    '✻ Stewing… (1m 15s · thought for 1m 15s)',
+  );
+  assert.equal(
+    formatCliSpinnerLine({ verb: 'Stewing', elapsedSec: 3725, thinking: { state: 'done', ms: 3725000 } }),
+    '✻ Stewing… (1h 2m 5s · thought for 1h 2m 5s)',
+  );
 });

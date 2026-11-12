@@ -291,12 +291,15 @@ export function formatCliSpinnerLine({
     }
     return String(n);
   };
-  const segs = [`${Math.max(0, Math.floor(Number(elapsedSec) || 0))}s`];
+  // 秒表超过 1 分钟就升级成 m/s：3725s 这种总秒数在手机上一行读不出来。
+  // 复用回合收尾行的 formatCliDuration，不另造第二套时长格式。
+  const segs = [formatCliDuration(Math.max(0, Math.floor(Number(elapsedSec) || 0)) * 1000)];
   if (Number.isFinite(outTokens) && outTokens > 0) segs.push(`↓ ${fmtTok(outTokens)} tokens`);
   if (thinking?.state === 'active') {
     segs.push(effort ? `thinking with ${effort} effort` : 'thinking…');
   } else if (thinking?.state === 'done') {
-    segs.push(`thought for ${Math.max(1, Math.round((thinking.ms || 0) / 1000))}s`);
+    // 先按整秒四舍五入再交给 formatCliDuration：<60s 那一档它走 floor，直接喂毫秒会把 2.6s 说成 2s。
+    segs.push(`thought for ${formatCliDuration(Math.max(1, Math.round((thinking.ms || 0) / 1000)) * 1000)}`);
   }
   if (Number.isFinite(sinceLastEventSec)) {
     if (sinceLastEventSec >= LIVE_STALE_WARN_SEC) segs.push(t('响应较慢，可能是深度思考或网络问题'));
