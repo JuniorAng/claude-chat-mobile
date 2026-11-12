@@ -386,7 +386,7 @@ test('.drawio 走 mxgraph 数据属性预览；GraphViewer 抛错时回源码', 
     await new Promise(setImmediate);
     const holder = dom.fileBrowseBody.querySelector('[data-testid="file-preview-drawio"]');
     assert.ok(holder, '没有挂 mxgraph 容器');
-    assert.deepEqual(JSON.parse(decodeURIComponent(holder.getAttribute('data-mxgraph'))),
+    assert.deepEqual(JSON.parse(holder.getAttribute('data-mxgraph')),
       { xml, toolbar: '', nav: false, resize: true });
 
     globalThis.GraphViewer.processElements = () => { throw new Error('boom'); };
@@ -401,7 +401,7 @@ test('.drawio 走 mxgraph 数据属性预览；GraphViewer 抛错时回源码', 
 test('drawioEmbedJson：编码后的 JSON 可解码回原 XML', async () => {
   const { drawioEmbedJson } = await import('../../app/public/js/app/file-browser.js');
   const xml = '<mxfile><diagram id="d"/></mxfile>';
-  assert.deepEqual(JSON.parse(decodeURIComponent(drawioEmbedJson(xml))),
+  assert.deepEqual(JSON.parse(drawioEmbedJson(xml)),
     { xml, toolbar: '', nav: false, resize: true });
 });
 

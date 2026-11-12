@@ -55,10 +55,11 @@ export function cmModeForFileName(name) {
   return CM_MIME_BY_EXT[ext] || null;
 }
 
-// drawio 的公开嵌入协议：div.mxgraph + data-mxgraph(JSON)。属性值是 encodeURIComponent 后的 JSON，
+// drawio 的公开嵌入协议：div.mxgraph + data-mxgraph(原始 JSON)。setAttribute 会处理引号转义，
+// 不能再 encodeURIComponent——viewer 直接 JSON.parse 这个属性（实测报 "Unexpected token '%'"）。
 // XML 全文交给 viewer 自己解析，不经我们 innerHTML。
 export function drawioEmbedJson(xml) {
-  return encodeURIComponent(JSON.stringify({ xml, toolbar: '', nav: false, resize: true }));
+  return JSON.stringify({ xml, toolbar: '', nav: false, resize: true });
 }
 
 export function createFileBrowser(context, {
