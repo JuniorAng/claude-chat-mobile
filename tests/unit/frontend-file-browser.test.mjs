@@ -370,3 +370,36 @@ test('notes.mmd 渲染成 SVG；渲染失败回源码并说明原因', async () 
     assert.ok(dom.fileBrowseBody.querySelector('[data-testid="file-preview-fallback"]'), '失败路径没有回源码');
   } finally { delete globalThis.mermaid; }
 });
+
+test('.drawio 走 mxgraph 数据属性预览；GraphViewer 抛错时回源码', async () => {
+  const xml = '<mxfile><diagram id="d"><mxGraphModel><root><mxCell id="0"/></root></mxGraphModel></diagram></mxfile>';
+  globalThis.GraphViewer = { processElements() {} };
+  try {
+    const { ctl, dom, head, pending, rowNamed } = harness({ sanitizeHtml: html => html });
+    ctl.open('/w');
+    pending('browse:list')[0].ack({ ok: true, truncated: false, totalCount: 1,
+      entries: [{ name: 'flow.drawio', kind: 'file', size: xml.length, mtime: 1 }] });
+    rowNamed('flow.drawio').onclick();
+    for (const script of head.children) script.onload();
+    pending('browse:read')[0].ack({ ok: true, content: xml, bytesRead: xml.length, truncated: false, totalSize: xml.length, contentHash: 'h' });
+    await new Promise(setImmediate);
+    const holder = dom.fileBrowseBody.querySelector('[data-testid="file-preview-drawio"]');
+    assert.ok(holder, '没有挂 mxgraph 容器');
+    assert.deepEqual(JSON.parse(decodeURIComponent(holder.getAttribute('data-mxgraph'))),
+      { xml, toolbar: '', nav: false, resize: true });
+
+    globalThis.GraphViewer.processElements = () => { throw new Error('boom'); };
+    await ctl.back();
+    rowNamed('flow.drawio').onclick();
+    pending('browse:read')[1].ack({ ok: true, content: xml, bytesRead: xml.length, truncated: false, totalSize: xml.length, contentHash: 'h2' });
+    await new Promise(setImmediate);
+    assert.ok(dom.fileBrowseBody.querySelector('[data-testid="file-preview-fallback"]'), '渲染抛错没有回源码');
+  } finally { delete globalThis.GraphViewer; }
+});
+
+test('drawioEmbedJson：编码后的 JSON 可解码回原 XML', async () => {
+  const { drawioEmbedJson } = await import('../../app/public/js/app/file-browser.js');
+  const xml = '<mxfile><diagram id="d"/></mxfile>';
+  assert.deepEqual(JSON.parse(decodeURIComponent(drawioEmbedJson(xml))),
+    { xml, toolbar: '', nav: false, resize: true });
+});

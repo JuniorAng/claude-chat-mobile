@@ -74,6 +74,15 @@ project's own code is licensed under Apache-2.0 (see root `LICENSE`); that does 
 - 来源 / Source: https://github.com/mermaid-js/mermaid（npm 包 `mermaid@11.12.0` 的 `dist/mermaid.min.js`）
 - 说明 / Notes: 仅在打开 `.mmd` / `.mermaid` 文件时按需加载；渲染走 `securityLevel: 'strict'`，输出再经 DOMPurify。
 
+## draw.io — `drawio/viewer-static.min.js`、`drawio/editor/`
+
+- 版本 / Version: v32.6.10（GitHub release tag，非 `dev` 分支）
+- 版权 / Copyright: © 2006–2025 JGraph Holdings Ltd / draw.io AG
+- 许可 / License: Apache-2.0 (SPDX: `Apache-2.0`)
+- 许可全文 / Full text: https://github.com/jgraph/drawio/blob/v32.6.10/LICENSE
+- 来源 / Source: https://github.com/jgraph/drawio/releases/tag/v32.6.10（解包 `draw.war`）
+- 说明 / Notes: `viewer-static.min.js` 只用于只读预览；`editor/` 是完整的 draw.io 编辑器，只由 `/drawio-editor/`（独立 CSP 路由）加载，且仅在 ≥768px 时打开。**`drawio/editor/` 可整目录删除**：只失去内联编辑器，预览与其余功能不受影响。
+
 ---
 
 ## 许可证全文 / Full license texts

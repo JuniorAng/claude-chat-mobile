@@ -55,6 +55,12 @@ export function cmModeForFileName(name) {
   return CM_MIME_BY_EXT[ext] || null;
 }
 
+// drawio 的公开嵌入协议：div.mxgraph + data-mxgraph(JSON)。属性值是 encodeURIComponent 后的 JSON，
+// XML 全文交给 viewer 自己解析，不经我们 innerHTML。
+export function drawioEmbedJson(xml) {
+  return encodeURIComponent(JSON.stringify({ xml, toolbar: '', nav: false, resize: true }));
+}
+
 export function createFileBrowser(context, {
   baseName = path => String(path || '').split('/').filter(Boolean).pop() || '',
   // 编辑态下经返回/关闭/切 tab/点背景退出前的二次确认（由 app.js 注入 appConfirm 包装）；默认放行，
@@ -90,6 +96,7 @@ export function createFileBrowser(context, {
   let codeMirrorReady = false; // 整包（核心＋全部 mode）都执行完才算；核心先执行，全局在不等于 mode 到齐
   let mermaidLoad = null;   // mermaid 脚本的按需加载（同 CodeMirror 的单例模式）
   let mermaidSeq = 0;       // mermaid.render 要唯一 DOM id
+  let drawioViewerLoad = null; // drawio 只读 viewer 的按需加载
   let targetLine = null;   // 文件链接带的行号，定位到后清掉
   let autoPages = 0;       // 为了够到 targetLine 已自动续读的页数
 
@@ -432,12 +439,14 @@ export function createFileBrowser(context, {
     if (ext === 'html' || ext === 'htm') return 'html';
     if (ext === 'md' || ext === 'markdown' || ext === 'mdx') return 'markdown';
     if (ext === 'mmd' || ext === 'mermaid') return 'mermaid';
+    if (ext === 'drawio' || ext === 'dio') return 'drawio';
     return null;
   }
 
   function renderPreview() {
     if (previewKind === 'html') renderHtmlPreview();
     else if (previewKind === 'mermaid') renderMermaidPreview();
+    else if (previewKind === 'drawio') renderDrawioPreview();
     else renderMarkdownPreview();
   }
 
@@ -483,6 +492,43 @@ export function createFileBrowser(context, {
       dom.fileBrowseBody.appendChild(holder);
     } catch (err) {
       if (!stillMermaid()) return;
+      renderSourceFallback(`${t('渲染失败，已显示源码')}：${String(err?.message || err).slice(0, 80)}`);
+    }
+  }
+
+  function loadDrawioViewer() {
+    if (typeof globalThis.GraphViewer !== 'undefined') return Promise.resolve(globalThis.GraphViewer);
+    if (!drawioViewerLoad) {
+      const version = new URL(import.meta.url).searchParams.get('v');
+      drawioViewerLoad = new Promise((resolve, reject) => {
+        const script = documentRef.createElement('script');
+        script.async = false;
+        script.onload = resolve;
+        script.onerror = reject;
+        script.src = `/vendor/drawio/viewer-static.min.js${version ? `?v=${version}` : ''}`;
+        documentRef.head.appendChild(script);
+      }).then(() => globalThis.GraphViewer || null, () => { drawioViewerLoad = null; return null; });
+    }
+    return drawioViewerLoad;
+  }
+
+  // .drawio / .dio：只读渲染成 SVG。viewer 自己处理压缩态 <diagram> 与 html=1 label；
+  // 脚本被主编排页的 CSP 拦住，图里的 HTML 只作展示。
+  async function renderDrawioPreview() {
+    const viewer = await loadDrawioViewer();
+    if (mode !== 'content' || previewKind !== 'drawio') return;
+    if (!viewer) { renderSourceFallback(t('渲染失败，已显示源码')); return; }
+    dom.fileBrowseBody.innerHTML = '';
+    cmInstance = null;
+    const holder = documentRef.createElement('div');
+    holder.className = 'mxgraph p-2';
+    holder.setAttribute('data-testid', 'file-preview-drawio');
+    holder.setAttribute('data-mxgraph', drawioEmbedJson(contentText));
+    dom.fileBrowseBody.appendChild(holder);
+    try {
+      viewer.processElements();
+    } catch (err) {
+      if (mode !== 'content' || previewKind !== 'drawio') return;
       renderSourceFallback(`${t('渲染失败，已显示源码')}：${String(err?.message || err).slice(0, 80)}`);
     }
   }
