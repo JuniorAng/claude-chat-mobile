@@ -48,6 +48,9 @@ const ROOT_FILES = new Map([
   ['docs/getting-started.md', 'Documentation'],
   ['docs/hard-rules.md', 'Documentation'],
   ['docs/testing.md', 'Documentation'],
+  // 按 superpowers 流程产出的设计稿与实施计划：一篇设计对应一支实施计划，随该分支一起删改。
+  ['docs/superpowers/plans/2026-11-12-file-viewers.md', 'Documentation'],
+  ['docs/superpowers/specs/2026-11-12-file-viewers-design.md', 'Documentation'],
   // 测试树的地图与不变量词汇表。逐个登记而不是给 tests/ 开一条兜底前缀——那条前缀会让
   // 任何落在 tests/ 根的文件都过闸，正是这道闸要挡的（一次性产物悄悄回堆）。
   ['tests/README.md', 'Documentation'],

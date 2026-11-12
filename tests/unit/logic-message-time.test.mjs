@@ -14,7 +14,7 @@
 //     与它同源（都走本地时区），不去伪造 UTC 边界。
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { resolveMessageTimeMarker, MESSAGE_TIME_GAP_MS } from '../../app/public/js/logic/message-time.js';
+import { resolveMessageTimeMarker, MESSAGE_TIME_GAP_MS, formatActionBarTs, formatBrowseTime } from '../../app/public/js/logic/message-time.js';
 
 // 本地时间构造：与 isSameLocalDay 的判据同源。
 const at = (y, mo, d, h, mi) => new Date(y, mo, d, h, mi, 0, 0).getTime();
@@ -78,4 +78,21 @@ test.describe('resolveMessageTimeMarker', () => {
     assert.equal(resolveMessageTimeMarker({ ts, prevTs, role: 'user' }), null, '默认阈值下 1 秒不够');
     assert.deepEqual(resolveMessageTimeMarker({ ts, prevTs, role: 'user', gapMs: 500 }), { kind: 'time', ts });
   });
+});
+
+test('formatActionBarTs：同年省略年份，跨年带年份，非法时间空串', () => {
+  const now = at(2026, 10, 12, 12, 0); // 2026-11-12 12:00 本地时间
+  assert.equal(formatActionBarTs(at(2026, 10, 12, 9, 5), { now }), '11-12 09:05');
+  assert.equal(formatActionBarTs(at(2025, 11, 31, 23, 59), { now }), '2025-12-31 23:59');
+  for (const bad of [null, 'not-a-date', 0, -1, NaN, {}]) {
+    assert.equal(formatActionBarTs(bad, { now }), '', `ts=${String(bad)} 不该产出文案`);
+  }
+});
+
+test('formatBrowseTime：今天带时分、昨天、更早只给日期，非法值空串', () => {
+  const now = at(2026, 10, 12, 12, 0); // 2026-11-12 本地时间
+  assert.equal(formatBrowseTime(at(2026, 10, 12, 9, 30), { now }), '今天 09:30');
+  assert.equal(formatBrowseTime(at(2026, 10, 11, 22, 0), { now }), '昨天');
+  assert.equal(formatBrowseTime(at(2026, 2, 1, 0, 0), { now }), '3月1日');
+  for (const bad of [NaN, undefined, null, 0]) assert.equal(formatBrowseTime(bad, { now }), '');
 });

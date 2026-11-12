@@ -13,6 +13,7 @@ import {
   rewriteCssAssetUrls,
   rewriteIndexAssetUrls,
   setSecurityHeaders,
+  cspDirectives,
   versionedAssetCacheControl,
 } from '../../../app/src/server/http.js';
 
@@ -192,6 +193,15 @@ export function createMockTransport({
     }
     res.type('text/css').send(rewriteCssAssetUrls(source, assetVersion));
   });
+
+  // drawio 编辑器（E2E 用）：与生产同路径。mock 没有全局 CSP，这里只补 opaque-origin iframe 需要的 CORS。
+  app.use('/drawio-editor', (req, res, next) => {
+    // 与生产同一条规则：只有这个前缀允许 unsafe-eval，且要被同源 iframe 框。
+    res.setHeader('Content-Security-Policy', cspDirectives(req.headers?.host, { editor: true }).join('; '));
+    res.setHeader('X-Frame-Options', 'SAMEORIGIN');
+    res.setHeader('Access-Control-Allow-Origin', '*');
+    next();
+  }, express.static(join(publicDir, 'vendor', 'drawio', 'editor')));
 
   app.use(express.static(publicDir, {
     setHeaders: (res, filePath) => {

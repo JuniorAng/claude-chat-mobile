@@ -292,3 +292,63 @@ test.describe('P0 日常零 token Mock UI 回归', () => {
     await expectNoBrowserErrors(page);
   });
 });
+
+test.describe('文件预览器', () => {
+  async function openFile(page: Page, name: string) {
+    await gotoMock(page);
+    await page.locator('#topContextPill').click();
+    await expect(page.locator('#workspaceModal')).toBeVisible();
+    await page.locator('[data-testid="browse-entry"]', { hasText: name }).click();
+  }
+
+  test('HTML 走 sandbox iframe、Mermaid 与 draw.io 渲染出 SVG', async ({ page }) => {
+    await openFile(page, 'report.html');
+    const frame = page.locator('#fileBrowseBody iframe[data-testid="file-preview-html"]');
+    await expect(frame).toBeVisible();
+    await expect(frame).toHaveAttribute('sandbox', '');
+    // 真的渲染了正文，而不只是挂了一个 iframe（sandbox/CSP 回归时这里会红）
+    await expect(page.frameLocator('iframe[data-testid="file-preview-html"]').getByText('REPORT')).toBeVisible();
+    // 源码只进了 srcdoc，没有进父页 DOM
+    await expect(page.locator('#fileBrowseBody')).not.toContainText('<h1>REPORT</h1>');
+
+    await page.locator('#fileBrowseBack').click();
+    await page.locator('[data-testid="browse-entry"]', { hasText: 'flow.mmd' }).click();
+    await expect(page.locator('#fileBrowseBody svg')).toBeVisible({ timeout: 10_000 });
+
+    await page.locator('#fileBrowseBack').click();
+    await page.locator('[data-testid="browse-entry"]', { hasText: 'diagram.drawio' }).click();
+    await expect(page.locator('[data-testid="file-preview-drawio"] svg')).toBeVisible({ timeout: 10_000 });
+
+    await expectNoBrowserErrors(page);
+  });
+
+  test('窄屏点 .drawio 的编辑：给提示、不出 drawio 编辑器 iframe', async ({ page }) => {
+    await page.setViewportSize({ width: 390, height: 844 });
+    await openFile(page, 'diagram.drawio');
+    await expect(page.locator('[data-testid="file-preview-drawio"] svg')).toBeVisible({ timeout: 10_000 });
+    await page.locator('#fileBrowseEdit').click();
+    await expect(page.locator('[data-testid="drawio-needs-wide"]')).toBeVisible();
+    await expect(page.locator('iframe[title="draw.io 编辑器"]')).toHaveCount(0);
+    // 退路是源码编辑：CodeMirror 挂上了
+    await expect(page.locator('#fileBrowseBody .cm-ccm-viewer .CodeMirror')).toBeVisible();
+    await expectNoBrowserErrors(page);
+  });
+
+  test('宽屏 .drawio 编辑：编辑器保存后回到预览', async ({ page }) => {
+    await page.setViewportSize({ width: 1280, height: 800 });
+    await openFile(page, 'diagram.drawio');
+    await expect(page.locator('[data-testid="file-preview-drawio"] svg')).toBeVisible({ timeout: 10_000 });
+    await page.locator('#fileBrowseEdit').click();
+    const editor = page.locator('iframe[title="draw.io 编辑器"]');
+    await expect(editor).toBeVisible();
+    const frame = page.frameLocator('iframe[title="draw.io 编辑器"]');
+    // 编辑器有 Save 与 Save & Exit 两个按钮，必须精确匹配
+    const saveBtn = frame.getByRole('button', { name: 'Save', exact: true });
+    await expect(saveBtn).toBeVisible({ timeout: 30_000 });
+    await saveBtn.click();
+    // 保存成功 → 关闭编辑器、回到预览
+    await expect(editor).toHaveCount(0, { timeout: 15_000 });
+    await expect(page.locator('[data-testid="file-preview-drawio"] svg')).toBeVisible();
+    await expectNoBrowserErrors(page);
+  });
+});

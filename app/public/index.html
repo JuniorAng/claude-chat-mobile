@@ -539,9 +539,20 @@
       <div id="workspaceWorktreeGone" class="hidden px-4 py-1.5 text-[11px] text-ink-soft bg-sunk/60 border-b border-line shrink-0" data-testid="workspace-worktree-gone"></div>
 
       <!-- 文件 tab 工具行 -->
-      <div id="fileBrowseTools" class="px-4 pb-2 pt-2 flex items-center gap-2 border-b border-line shrink-0">
-        <button id="fileBrowseBack" class="hit-44 hidden w-7 h-7 rounded-lg flex items-center justify-center text-ink-soft hover:bg-sunk active:scale-95 text-sm shrink-0" title="返回上一级" aria-label="返回上一级">←</button>
-        <div id="fileBrowsePath" class="flex-1 min-w-0 text-xs font-mono text-ink-soft truncate"></div>
+      <div id="fileBrowseTools" class="px-4 pb-2 pt-2 flex items-center justify-between gap-2 border-b border-line shrink-0">
+        <div class="flex items-center gap-2 flex-1 min-w-0">
+          <button id="fileBrowseBack" class="hit-44 hidden w-7 h-7 rounded-lg flex items-center justify-center text-ink-soft hover:bg-sunk active:scale-95 text-sm shrink-0" title="返回上一级" aria-label="返回上一级">←</button>
+          <div id="fileBrowsePath" class="flex-1 min-w-0 text-xs font-mono text-ink-soft truncate"></div>
+        </div>
+        <!-- 排序只在列表模式出现（file-browser.js 按 mode 显隐）；name 模式保持服务端顺序。 -->
+        <div id="fileBrowseSortGroup" class="hidden items-center gap-1 shrink-0">
+          <select id="fileBrowseSortKey" class="text-[11px] rounded-lg border border-line bg-surface text-ink-soft px-1.5 py-1" aria-label="排序方式">
+            <option value="name">名称</option>
+            <option value="mtime">修改时间</option>
+            <option value="size">大小</option>
+          </select>
+          <button id="fileBrowseSortDir" type="button" class="w-7 h-7 rounded-lg flex items-center justify-center text-ink-soft hover:bg-sunk active:scale-95 text-sm shrink-0" aria-label="升序">↑</button>
+        </div>
         <!-- CodeMirror 编辑+写回（files:write，见 file-browse.js writeFileInScope）：只在整份小文件在手
              （browse:read 带 contentHash）时出现；三态互斥，同一时刻只显其一。 -->
         <button id="fileBrowseDownload" class="hidden shrink-0 px-2 py-1 rounded-lg text-[11px] font-medium text-accent hover:bg-sunk active:scale-95" data-testid="file-download-btn">下载</button>

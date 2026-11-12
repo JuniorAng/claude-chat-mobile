@@ -1058,3 +1058,55 @@ test('configureHttpShell 关掉 X-Powered-By：不向扫描器自报技术栈', 
     rmSync(root, { recursive: true, force: true });
   }
 });
+
+// drawio 编辑器是唯一放宽 unsafe-eval 的地方。这条闸同时钉三件事：
+// 主页面永远没有 unsafe-eval；编辑器路由有且没有 unsafe-inline；CORS 只挂在编辑器前缀上。
+test.describe('drawio 编辑器路由的 CSP 与 CORS 边界', () => {
+  const roots = [];
+  test.after(() => { for (const dir of roots) rmSync(dir, { recursive: true, force: true }); });
+
+  function mountEditor() {
+    const root = mkdtempSync(join(tmpdir(), 'ccm-http-drawio-'));
+    roots.push(root);
+    mkdirSync(join(root, 'app/public/vendor/drawio/editor'), { recursive: true });
+    writeFileSync(join(root, 'app/public/vendor/drawio/editor/index.html'), '<script src="js/bootstrap.js"></script>');
+    const mounted = [];
+    const app = {
+      use: (p, ...h) => mounted.push([String(p), h]),
+      get: () => {},
+      disable: () => {},
+    };
+    configureHttpShell({ app, projectRoot: root, strategy: strategyStub(), hotReloadJs: false });
+    const entry = mounted.find(([p]) => p === '/drawio-editor');
+    assert.ok(entry, '未挂载 /drawio-editor 路由');
+    return entry[1][0]; // 第一个 handler：设头的那一个
+  }
+
+  function runMiddleware(fn) {
+    const headers = new Map();
+    const res = { setHeader(k, v) { headers.set(k, v); return this; }, removeHeader(k) { headers.delete(k); } };
+    let nextCalled = false;
+    fn({ path: '/drawio-editor/', headers: { host: 'ccm.example:8443' } }, res, () => { nextCalled = true; });
+    return { headers, nextCalled };
+  }
+
+  test('编辑器 CSP 有 unsafe-eval、没有 unsafe-inline；XFO 允许同源框', () => {
+    const { headers, nextCalled } = runMiddleware(mountEditor());
+    assert.equal(nextCalled, true);
+    const csp = headers.get('Content-Security-Policy');
+    assert.match(csp, /script-src 'self' 'unsafe-eval'/);
+    assert.doesNotMatch(csp, /script-src[^;]*unsafe-inline/);
+    assert.equal(headers.get('X-Frame-Options'), 'SAMEORIGIN');
+    assert.equal(headers.get('Access-Control-Allow-Origin'), '*');
+  });
+
+  test('主页面与 API 无 unsafe-eval，且没有 CORS 头', () => {
+    const headers = new Map();
+    setSecurityHeaders({ setHeader: (k, v) => headers.set(k, v) }, 'ccm.example:8443');
+    const csp = headers.get('Content-Security-Policy');
+    assert.doesNotMatch(csp, /unsafe-eval/);
+    assert.match(csp, /script-src 'self'(;|$)/);
+    assert.equal(headers.get('X-Frame-Options'), 'DENY');
+    assert.equal(headers.get('Access-Control-Allow-Origin'), undefined);
+  });
+});
