@@ -198,6 +198,7 @@ import { createGateFocusController } from './app/focus-layers.js';
 import { createConsoleModal } from './app/console-modal.js';
 import { createServiceStatus } from './app/service-status.js';
 import { createStatuslineView } from './app/statusline-view.js';
+import { createProcessGroups } from './app/process-group.js';
 import { createEmptySurfaces, starterPromptsHtml, wireStarterPrompts } from './app/empty-surfaces.js';
 import { createSessionSidebar } from './app/session-sidebar.js';
 import { createComposerControls } from './app/composer-controls.js';
@@ -1082,9 +1083,15 @@ import { createKeyboardInset } from './app/keyboard-inset.js';
   function stripEphemeralMessageNodes(nodes) {
     return nodes.filter(n => !(n?.nodeType === 1 && n.getAttribute?.('data-ephemeral') === '1'));
   }
+  // 过程痕迹分组：连续的 thinking / 工具卡 / 子 agent 卡收进一个可折叠组（见 app/process-group.js）。
+  // live 与历史两条渲染路径共用同一份实现，刷新前后才同构。
+  const processGroups = createProcessGroups({ el });
   // 流内 live 行须始终在 #messages 末尾；append 后 pin，避免工具卡/思考卡插到它下面。
-  const appendMessage = (node) => {
-    const result = messageRenderer.appendMessage(node);
+  // desc 只给过程项：{ kind: 'thinking'|'tool_use'|'subagent-card' }。不传 = 断点（正文/气泡/系统条）。
+  const appendMessage = (node, desc = null) => {
+    // 组自己负责挂进 #messages；首页的「空表面」由这里统一撤掉（幂等：已在非空态时直接返回）。
+    leaveStartScreen();
+    const result = processGroups.append(messagesEl, node, desc);
     pinStreamLiveStatus();
     return result;
   };
@@ -2772,7 +2779,7 @@ import { createKeyboardInset } from './app/keyboard-inset.js';
         sa.body.appendChild(card);
         if (widgetNode) sa.body.appendChild(widgetNode);
       } else if (!isMergedSpawn) {
-        appendMessage(card);
+        appendMessage(card, { kind: 'tool_use', name: p.name });
         if (widgetNode) appendMessage(widgetNode);
       }
       scrollBottom();
@@ -2990,6 +2997,7 @@ import { createKeyboardInset } from './app/keyboard-inset.js';
       }
     },
     result(p, ev) {
+      processGroups.endRun(); // 回合结束：过程组自动收起（幂等，setBusy(false) 也会调）
       // 服务端随 result 下发完整回复文本——断网恢复后 s.raw 可能因遗漏 deltas 而截断，
       // 此处用权威全文覆盖确保 Markdown 渲染完整（E18）
       if (p.text && p.messageId) {
@@ -3213,7 +3221,7 @@ import { createKeyboardInset } from './app/keyboard-inset.js';
       const body = document.createTextNode('');
       wrap.querySelector('.t-body').appendChild(body);
       wrap.classList.add('thinking-live'); // UX-016
-      appendMessage(wrap);
+      appendMessage(wrap, { kind: 'thinking' });
       entry = { body, el: wrap };
       thinkings.set(key, entry);
       scrollBottom();
@@ -3265,7 +3273,7 @@ import { createKeyboardInset } from './app/keyboard-inset.js';
       };
       renderSubagentTitle(c);
       subagentCards.set(parentId, c);
-      appendMessage(wrap);
+      appendMessage(wrap, { kind: 'subagent-card' });
       scrollBottom();
     } else if (subagentType != null && String(subagentType).trim() && !c.type) {
       // 首批 delta 可能早于带 subagentType 的 assistant：后来补类型标签
@@ -5089,6 +5097,7 @@ import { createKeyboardInset } from './app/keyboard-inset.js';
       announceTurn(t('Claude 正在回复'));
     } else {
       clearInterruptPending(viewingInstanceId, { keepLiveOverride: true }); // setBusy(false) 终态：清 pending/timer；live 整清在下两行
+      processGroups.endRun(); // 回合结束：过程组自动收起（用户手动点过的除外）
       stopLiveTicker();
       liveLine = null;
       hideStreamLiveStatus();
@@ -5639,7 +5648,7 @@ import { createKeyboardInset } from './app/keyboard-inset.js';
       }));
     messagesEl.innerHTML = '';
     messagesEl.classList.remove('empty-start');
-    clearStreams(); thinkings.clear(); toolCards.clear();
+    clearStreams(); thinkings.clear(); toolCards.clear(); processGroups.reset();
     histToolCards.clear(); histSubCards.clear(); // 切会话/清屏：历史配对表也要随 DOM 一起归零，防跨会话误配对
     turnFileChanges = new Map(); // 切会话：丢弃未 flush 的本轮账本
     // UX-008：清视图后若仍无内容（新会话），给极简引导
@@ -6154,12 +6163,14 @@ import { createKeyboardInset } from './app/keyboard-inset.js';
       frag.appendChild(wrap);
       return c;
     };
-    const appendNode = (node, msg) => {
+    // 历史与 live 用同一个分组工厂：desc 由 msg.kind 决定，不传 = 断点。
+    // 子 agent / 侧链的条目仍进它们自己的卡（那里不分层分组，避免嵌套两层折叠）。
+    const appendNode = (node, msg, desc = null) => {
       if (msg?.parentToolUseId || msg?.isSidechain) {
         const pid = msg.parentToolUseId || 'sidechain';
         ensureHistSub(pid).body.appendChild(node);
       } else {
-        frag.appendChild(node);
+        processGroups.append(frag, node, desc);
       }
     };
     function renderOne(msg) {
@@ -6194,7 +6205,7 @@ import { createKeyboardInset } from './app/keyboard-inset.js';
             <pre class="t-body px-3 pb-2 whitespace-pre-wrap"></pre>
           </details>`);
         wrap.querySelector('.t-body').textContent = localizeServerThinkingText(msg.content);
-        appendNode(wrap, msg);
+        appendNode(wrap, msg, { kind: 'thinking' });
         return;
       }
       if (msg?.kind === 'tool_use') {
@@ -6248,7 +6259,7 @@ import { createKeyboardInset } from './app/keyboard-inset.js';
           }
         }
         if (!histMergedSpawn) {
-          appendNode(card, msg);
+          appendNode(card, msg, { kind: 'tool_use', name: msg.name });
           const widgetNode = msg.widget ? widgets.render(msg.widget) : null; // 同 live：图紧跟工具卡
           if (widgetNode) appendNode(widgetNode, msg);
         }

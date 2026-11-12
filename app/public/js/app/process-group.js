@@ -16,6 +16,7 @@
 // 【为什么不包 tool_result】它跟着自己的工具卡走（写回卡上的 .t-out），独立成项只会让计数翻倍。
 import { classifyProcessNode, summarizeProcessGroup } from '../logic/process-group.js';
 
+
 export function createProcessGroups({ el, now = () => Date.now() } = {}) {
   let group = null;       // 当前打开的 { details, body, summary, first, items, startedAt }
   let pending = null;     // 已经投递、但还只有一条的过程节点（等第二条到来才包组）
