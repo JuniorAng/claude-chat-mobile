@@ -655,6 +655,7 @@ export const EN_DICT = Object.freeze({
   '工具执行已因本轮错误停止': 'Tool execution stopped by an error this turn',
   '已随停止取消，未发送': 'Cancelled with the stop — not sent',
   '进行中': 'In progress',
+  '思考': 'Thinking',
   '预览': 'Preview',
   '预览不可用': 'Preview unavailable',
   '点击预览': 'Tap to preview',
