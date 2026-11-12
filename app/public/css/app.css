@@ -579,6 +579,17 @@ body.ccm-sheet-open #messages {
   gap: 0.5rem;
   margin-top: 0.4rem;
 }
+/* 操作栏末尾的时间戳：10px、ink-faint、不可选中；margin-left:auto 推进栏尾。 */
+.msg-action-ts {
+  margin-left: auto;
+  padding-left: 0.5rem;
+  font-size: 10px;
+  color: var(--ink-faint);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  user-select: none;
+}
+
 .msg-action-btn {
   display: inline-flex;
   align-items: center;
