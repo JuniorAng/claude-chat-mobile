@@ -9,6 +9,8 @@
 // 协议（实测）：编辑器先发 {event:'configure'}，回 {action:'configure', config:{}}；
 // 再发 {event:'init'}，回 {action:'load', xml, title, autosave:0, saveAndExit:1}；
 // 用户点 Save 发 {event:'save', xml}；点 Exit 发 {event:'exit'}。其余事件一律忽略。
+import { t } from '../i18n.js';
+
 export function createDrawioEditorBridge({
   documentRef = globalThis.document,
   socket,
@@ -44,7 +46,7 @@ export function createDrawioEditorBridge({
       if (!open) return;
       if (!response?.ok) {
         // 留在编辑器里：冲突/超限要用户自己决定下一步，不擅自丢改动
-        addBar(response?.error || '保存失败');
+        addBar(response?.error || t('保存失败'));
         return;
       }
       const done = open;
@@ -80,7 +82,7 @@ export function createDrawioEditorBridge({
     host.innerHTML = '';
     frame = documentRef.createElement('iframe');
     frame.className = 'w-full h-full border-0 bg-white';
-    frame.title = 'draw.io 编辑器';
+    frame.title = t('draw.io 编辑器');
     // 没有 allow-same-origin = opaque origin：编辑器读不到 CCM 的 localStorage。
     frame.setAttribute('sandbox', 'allow-scripts');
     frame.setAttribute('src', '/drawio-editor/?embed=1&proto=json&configure=1&pwa=1');

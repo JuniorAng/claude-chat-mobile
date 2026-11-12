@@ -306,6 +306,10 @@ test.describe('文件预览器', () => {
     const frame = page.locator('#fileBrowseBody iframe[data-testid="file-preview-html"]');
     await expect(frame).toBeVisible();
     await expect(frame).toHaveAttribute('sandbox', '');
+    // 真的渲染了正文，而不只是挂了一个 iframe（sandbox/CSP 回归时这里会红）
+    await expect(page.frameLocator('iframe[data-testid="file-preview-html"]').getByText('REPORT')).toBeVisible();
+    // 源码只进了 srcdoc，没有进父页 DOM
+    await expect(page.locator('#fileBrowseBody')).not.toContainText('<h1>REPORT</h1>');
 
     await page.locator('#fileBrowseBack').click();
     await page.locator('[data-testid="browse-entry"]', { hasText: 'flow.mmd' }).click();

@@ -434,3 +434,38 @@ test('drawio 编辑：宽屏打开内联编辑器，窄屏给提示并退回 Cod
     assert.ok(narrow.dom.fileBrowseBody.querySelector('[data-testid="drawio-needs-wide"]'), '窄屏没有提示');
   } finally { delete globalThis.GraphViewer; delete globalThis.CodeMirror; }
 });
+
+test('预览器在途：加载中不显示「编辑」；离开后迟到的渲染不得清掉新文件', async () => {
+  const { ctl, dom, head, pending, rowNamed } = harness({
+    sanitizeHtml: html => html,
+    renderMarkdown: raw => `<p>${raw}</p>`,
+  });
+  let mermaidResolve = null;
+  const mermaidGate = new Promise(resolve => { mermaidResolve = resolve; });
+  globalThis.mermaid = { initialize() {}, render: async () => { await mermaidGate; return { svg: '<svg data-testid="mermaid-svg"></svg>' }; } };
+  try {
+    ctl.open('/w');
+    pending('browse:list')[0].ack({ ok: true, truncated: false, totalCount: 2, entries: [
+      { name: 'a.mmd', kind: 'file', size: 5, mtime: 1 },
+      { name: 'README.md', kind: 'file', size: 5, mtime: 2 },
+    ] });
+    rowNamed('a.mmd').onclick();
+    for (const script of head.children) script.onload();   // CodeMirror 先到
+    pending('browse:read')[0].ack({ ok: true, content: 'graph TD; A', bytesRead: 13, truncated: false, totalSize: 13, contentHash: 'h' });
+    await new Promise(setImmediate);   // 此时 mermaid 渲染被 gate 挂住
+
+    assert.match(dom.fileBrowseBody.children.at(-1).textContent, /加载中/, '异步渲染期间必须是「加载中」，不能留空白');
+    assert.equal(dom.fileBrowseEdit.classList.contains('hidden'), true, '预览还没画出来就露出「编辑」，编辑会把迟到的渲染压掉');
+
+    await ctl.back();                                   // 离开这个文件
+    rowNamed('README.md').onclick();
+    pending('browse:read')[1].ack({ ok: true, content: '# hi', bytesRead: 4, truncated: false, totalSize: 4, contentHash: 'h2' });
+    await new Promise(setImmediate);
+    mermaidResolve();                                   // 旧文件的 mermaid 渲染这时才完成
+    await new Promise(setImmediate);
+    await new Promise(setImmediate);
+
+    const last = dom.fileBrowseBody.children.at(-1);
+    assert.equal(last.className, 'msg-body p-4', '迟到的 mermaid 渲染把新文件的 markdown 预览清掉了');
+  } finally { delete globalThis.mermaid; }
+});

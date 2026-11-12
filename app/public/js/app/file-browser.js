@@ -100,6 +100,7 @@ export function createFileBrowser(context, {
   let mermaidSeq = 0;       // mermaid.render 要唯一 DOM id
   let drawioViewerLoad = null; // drawio 只读 viewer 的按需加载
   let drawioEditing = false; // 内联 drawio 编辑器是否正在接管正文区
+  let previewPending = false; // 异步预览器（mermaid/drawio）还在加载：此时不给「编辑」
   let targetLine = null;   // 文件链接带的行号，定位到后清掉
   let autoPages = 0;       // 为了够到 targetLine 已自动续读的页数
 
@@ -365,7 +366,7 @@ export function createFileBrowser(context, {
 
   function syncEditButtons() {
     syncSortControls();
-    const editable = Boolean(baseHash) && (Boolean(cmInstance) || editOnDemand) && !drawioEditing;
+    const editable = Boolean(baseHash) && (Boolean(cmInstance) || editOnDemand) && !drawioEditing && !previewPending;
     dom.fileBrowseEdit?.classList.toggle('hidden', !(editable && editMode === 'view'));
     dom.fileBrowseSave?.classList.toggle('hidden', editMode !== 'editing');
     dom.fileBrowseCancelEdit?.classList.toggle('hidden', editMode !== 'editing');
@@ -505,9 +506,18 @@ export function createFileBrowser(context, {
   // .mmd / .mermaid 渲染成 SVG。securityLevel 'strict' 是 mermaid 自己的净化，输出再经注入的
   // sanitizeHtml 洗一遍；没注入就回源码（fail closed），绝不直接插未净化的 SVG。
   async function renderMermaidPreview() {
+    // 快照：await 之后任何一项变了（换文件 / 进编辑 / 打开 drawio 编辑器），这次渲染都必须作废——
+    // 否则迟到的渲染会清掉用户正在看的编辑器或另一个文件的预览。
+    const gen = contentReadGen;
+    const source = contentText;
+    const cancelled = () => gen !== contentReadGen || mode !== 'content' || previewKind !== 'mermaid'
+      || editMode !== 'view' || drawioEditing;
+    previewPending = true;
+    showMessage(t('加载中…'));
+    syncEditButtons();
     const mermaid = await loadMermaid();
-    const stillMermaid = () => mode === 'content' && previewKind === 'mermaid';
-    if (!stillMermaid()) return;
+    if (cancelled()) return;
+    previewPending = false;
     if (!mermaid || typeof sanitizeHtml !== 'function') {
       renderSourceFallback(t('渲染失败，已显示源码'));
       return;
@@ -518,16 +528,18 @@ export function createFileBrowser(context, {
       theme: documentRef.documentElement?.dataset?.theme === 'dark' ? 'dark' : 'default',
     });
     try {
-      const { svg } = await mermaid.render(`ccm-mermaid-${++mermaidSeq}`, contentText);
-      if (!stillMermaid()) return;
+      const { svg } = await mermaid.render(`ccm-mermaid-${++mermaidSeq}`, source);
+      if (cancelled()) return;
       const holder = documentRef.createElement('div');
       holder.className = 'p-4 overflow-auto';
       holder.innerHTML = sanitizeHtml(svg);
       dom.fileBrowseBody.innerHTML = '';
       cmInstance = null;
       dom.fileBrowseBody.appendChild(holder);
+      previewPending = false;
+      syncEditButtons();
     } catch (err) {
-      if (!stillMermaid()) return;
+      if (cancelled()) return;
       renderSourceFallback(`${t('渲染失败，已显示源码')}：${String(err?.message || err).slice(0, 80)}`);
     }
   }
@@ -551,8 +563,15 @@ export function createFileBrowser(context, {
   // .drawio / .dio：只读渲染成 SVG。viewer 自己处理压缩态 <diagram> 与 html=1 label；
   // 脚本被主编排页的 CSP 拦住，图里的 HTML 只作展示。
   async function renderDrawioPreview() {
+    const gen = contentReadGen;
+    const cancelled = () => gen !== contentReadGen || mode !== 'content' || previewKind !== 'drawio'
+      || editMode !== 'view' || drawioEditing;
+    previewPending = true;
+    showMessage(t('加载中…'));
+    syncEditButtons();
     const viewer = await loadDrawioViewer();
-    if (mode !== 'content' || previewKind !== 'drawio') return;
+    if (cancelled()) return;
+    previewPending = false;
     if (!viewer) { renderSourceFallback(t('渲染失败，已显示源码')); return; }
     dom.fileBrowseBody.innerHTML = '';
     cmInstance = null;
@@ -561,10 +580,12 @@ export function createFileBrowser(context, {
     holder.setAttribute('data-testid', 'file-preview-drawio');
     holder.setAttribute('data-mxgraph', drawioEmbedJson(contentText));
     dom.fileBrowseBody.appendChild(holder);
+    previewPending = false;
+    syncEditButtons();
     try {
       viewer.processElements();
     } catch (err) {
-      if (mode !== 'content' || previewKind !== 'drawio') return;
+      if (cancelled()) return;
       renderSourceFallback(`${t('渲染失败，已显示源码')}：${String(err?.message || err).slice(0, 80)}`);
     }
   }
@@ -575,6 +596,7 @@ export function createFileBrowser(context, {
     dom.fileBrowseBody.innerHTML = '';
     cmInstance = null;
     previewKind = null;
+    previewPending = false;
     const notice = documentRef.createElement('div');
     notice.className = 'px-4 py-1.5 text-[10px] text-ink-faint border-b border-line-soft';
     notice.setAttribute('data-testid', 'file-preview-fallback');
@@ -627,6 +649,7 @@ export function createFileBrowser(context, {
     dom.fileBrowseBody.innerHTML = '';
     cmInstance = null;
     previewKind = null;
+    previewPending = false;
     editMode = 'view';
     editOnDemand = false;
     baseHash = contentHash || null;

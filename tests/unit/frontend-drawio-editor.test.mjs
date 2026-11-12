@@ -4,6 +4,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 
 import { createDrawioEditorBridge } from '../../app/public/js/app/drawio-editor.js';
+import { setLang } from '../../app/public/js/i18n.js';
 
 function fakeDoc() {
   const listeners = [];
@@ -101,4 +102,15 @@ test('桥：来自别的 window 的消息、非 JSON、未知 event 一律忽略
   listener({ data: JSON.stringify({ event: 'unknown' }), source: frame.contentWindow });
   listener({ data: JSON.stringify({ event: 'save', xml: '<x/>' }), source: { other: true } });
   assert.equal(bridge.isOpen(), true);
+});
+
+test('编辑器 iframe 的 title 走 i18n（英文界面不残留中文）', () => {
+  setLang('en');
+  try {
+    const documentRef = fakeDoc();
+    const bridge = createDrawioEditorBridge({ documentRef, socket: { emit() {} } });
+    const host = documentRef.createElement('div');
+    bridge.open({ host, xml: '<mxfile/>', name: 'a.drawio', baseHash: 'h', cwd: '/w', relPath: 'a.drawio' });
+    assert.equal(host.children.at(-1).title, 'draw.io editor');
+  } finally { setLang('zh'); }
 });
