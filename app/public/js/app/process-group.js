@@ -86,8 +86,9 @@ export function createProcessGroups({ el, now = () => Date.now() } = {}) {
     return { grouped: true };
   }
 
+  // 正文来了只是「本组到此为止」，不是「这组已经收尾」——它仍归本回合管，
+  // endRun 还要把它收起。所以这里【不】从 all 里删。
   function closeGroup() {
-    if (group) all.delete(group);
     group = null;
   }
 

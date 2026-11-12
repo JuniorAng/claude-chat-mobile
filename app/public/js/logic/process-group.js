@@ -49,7 +49,8 @@ export function summarizeProcessGroup(items, { durationMs = null } = {}) {
   for (const { name, count } of shown) segs.push(onlyOneTool ? name : `${name} ${count}`);
   if (more) segs.push('…');
   const ms = Number(durationMs);
-  if (Number.isFinite(ms) && ms > 0) segs.push(formatCliDuration(ms));
+  // 不足 1 秒不显示：刚开跑的两张卡会读出刺眼的「0s」，而它对判断「这轮贵不贵」没有信息量。
+  if (Number.isFinite(ms) && ms >= 1000) segs.push(formatCliDuration(ms));
 
   return { text: segs.join(' · '), counts, toolNames };
 }

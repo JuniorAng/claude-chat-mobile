@@ -131,3 +131,15 @@ test('组头文案随时间刷新（live 秒表），端到端接的是 summariz
   assert.match(head, /思考 1/);
   assert.match(head, /4s/);
 });
+
+test('正文断开之后，前一组仍归本回合管：endRun 照样收起它', () => {
+  const groups = createProcessGroups({ el: fakeEl, now: () => 1000 });
+  const host = fakeEl('<main></main>');
+  groups.append(host, node('thinking'), { kind: 'thinking' });
+  groups.append(host, node('toolcard'), { kind: 'tool_use', name: 'Read' });
+  groups.append(host, fakeEl('<div data-testid="assistant-message"></div>'));
+  const group = host.children.find(c => c.className.includes('process-group'));
+  assert.equal(group.open, true);
+  groups.endRun();
+  assert.equal(group.open, false, '正文断开后的组没有被回合结束收起——用户会一直看着一堆展开的过程');
+});
