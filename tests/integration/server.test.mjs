@@ -223,7 +223,7 @@ test.describe('事件流 — 新连接重放', () => {
     assert.equal(projects[0].kind, 'connected');
     // 从没用过无文件夹会话：抽屉里不该平白多一节空的（官方侧栏同样只列有会话的项目）
     assert.ok(!projects.some(p => p.kind === 'scratch'), `没在用的「无文件夹」占了一节：${JSON.stringify(projects)}`);
-    for (const p of projects) assert.deepEqual(Object.keys(p).sort(), ['key', 'kind', 'label', 'root']);
+    for (const p of projects) assert.deepEqual(Object.keys(p).sort(), ['key', 'kind', 'label', 'lastActiveAt', 'root']);
 
     const ack = await new Promise((resolve, reject) => {
       const t = setTimeout(() => reject(new Error('session:list 超时')), 3000);
