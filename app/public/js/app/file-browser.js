@@ -73,7 +73,12 @@ const DANGEROUS_DRAWIO_TAGS = 'script,iframe,object,embed,meta,base,link,style,a
 
 // URL 属性只认会执行的三个名字。判定前先按浏览器解析 URL 的口径剥掉 C0 控制符与空白：
 // `\x01javascript:` / `java\tscript:` 在地址栏里照样是 javascript:，而正则若只看原串会漏掉。
-const normalizeUrlForSchemeCheck = value => String(value || '').replace(/[\u0000- ]+/g, '').toLowerCase();
+// 用逐字符过滤而不是正则：no-control-regex 不许把控制符写进字符类。
+const normalizeUrlForSchemeCheck = value => {
+  let out = '';
+  for (const ch of String(value || '')) if (ch.charCodeAt(0) > 0x20) out += ch;
+  return out.toLowerCase();
+};
 
 export function isDangerousDrawioAttr(name, value) {
   const n = String(name || '').toLowerCase();
