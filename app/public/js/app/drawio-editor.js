@@ -25,6 +25,8 @@ export function createDrawioEditorBridge({
   let saving = false;
 
   function post(message) {
+    // targetOrigin 只能是 '*'：iframe 被 sandbox 成 opaque origin，带具体 origin 的消息会被浏览器丢弃。
+    // 安全性由接收侧的 event.source === frame.contentWindow 保证——source 由浏览器填写，不能伪造。
     frame?.contentWindow?.postMessage(JSON.stringify(message), '*');
   }
 
@@ -38,26 +40,32 @@ export function createDrawioEditorBridge({
   // 收到 save：整份新 XML 走 files:write（与 CodeMirror 同一条写回路径与冲突基线）。
   function saveXml(xml) {
     if (!open || saving) return;
+    // 记住这次保存针对的是哪一个「打开」。回执回来时如果 open 已经换成另一份文件（或已关闭），
+    // 不能把结果套到新文件上——否则关掉 A 立刻打开 B，A 的迟到回执会把 B 当成已保存。
+    const target = open;
     saving = true;
-    const { cwd, relPath, baseHash } = open;
+    const { cwd, relPath, baseHash } = target;
     socket.emit('files:write', { cwd, relPath, content: xml, baseHash }, response => {
       saving = false;
-      // 迟到回执：编辑器已被关掉/换了文件，别把结果套到当前视图
-      if (!open) return;
+      if (open !== target) return;
       if (!response?.ok) {
         // 留在编辑器里：冲突/超限要用户自己决定下一步，不擅自丢改动
         addBar(response?.error || t('保存失败'));
         return;
       }
-      const done = open;
       close();
-      onSaved(xml, response.contentHash, done);
+      onSaved(xml, response.contentHash, target);
     });
   }
 
   // 单元测试直接喂 { data, source } 形状；生产路径由 addEventListener 调进来。
   function handle(event) {
     if (!frame || event?.source !== frame.contentWindow) return;
+    // sandbox 之后 opaque origin 报字符串 "null"；部分浏览器不会把 sandbox 反映到 postMessage 的
+    // origin 上，报的就是本页 origin。两者之外一律丢弃（多一层与 source 同向的判据）。
+    const origin = event?.origin;
+    const here = globalThis.location?.origin;
+    if (origin && origin !== 'null' && origin !== here) return;
     let message;
     try { message = typeof event.data === 'string' ? JSON.parse(event.data) : event.data; } catch { return; }
     if (!message || typeof message !== 'object') return;

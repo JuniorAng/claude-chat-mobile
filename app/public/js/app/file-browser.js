@@ -62,6 +62,32 @@ export function drawioEmbedJson(xml) {
   return JSON.stringify({ xml, toolbar: '', nav: false, resize: true });
 }
 
+// draw.io 的静态 viewer 把 .drawio 里的 label HTML 铺进【应用文档】里（与 mermaid 不同，没有
+// DOMPurify 第二道）。CSP 已经挡住脚本执行（script-src 'self'，无 unsafe-inline）与网络外带
+// （default-src / img-src 'self'），这里再把能在 DOM 里留后手的节点、事件属性与 javascript: URL
+// 拆掉——纵深防御不依赖单一控制。返回值只用于测试/诊断。
+const DANGEROUS_DRAWIO_TAGS = 'script,iframe,object,embed,meta,base,link';
+
+export function isDangerousDrawioAttr(name, value) {
+  const n = String(name || '').toLowerCase();
+  if (n.startsWith('on')) return true;
+  return /^(href|src|xlink:href)$/.test(n) && /^\s*javascript:/i.test(String(value || ''));
+}
+
+export function hardenDrawioDom(root) {
+  if (!root?.querySelectorAll) return 0;
+  let removed = 0;
+  for (const node of [...root.querySelectorAll(DANGEROUS_DRAWIO_TAGS)]) { node.remove(); removed += 1; }
+  for (const el of root.querySelectorAll('*')) {
+    for (const attr of [...(el.attributes || [])]) {
+      if (!isDangerousDrawioAttr(attr.name, attr.value)) continue;
+      el.removeAttribute(attr.name);
+      removed += 1;
+    }
+  }
+  return removed;
+}
+
 export function createFileBrowser(context, {
   baseName = path => String(path || '').split('/').filter(Boolean).pop() || '',
   // 编辑态下经返回/关闭/切 tab/点背景退出前的二次确认（由 app.js 注入 appConfirm 包装）；默认放行，
@@ -70,7 +96,7 @@ export function createFileBrowser(context, {
   createElement,
   haptic = () => {},
   renderMarkdown = null, // 与消息正文同一份 marked + DOMPurify，见 renderContent 的 markdown 预览
-  sanitizeHtml = null,   // 预览器输出的第二道净化（mermaid/drawio）；未注入时预览回源码（fail closed）
+  sanitizeHtml = null,   // mermaid 预览的第二道净化；drawio 走 vendor viewer，见 hardenDrawioDom
   getDrawioEditor = () => null, // drawio 内联编辑器桥（app/drawio-editor.js）；惰性注入避免与控制器互相构造
 } = {}) {
   const dom = context.dom;
@@ -584,6 +610,7 @@ export function createFileBrowser(context, {
     syncEditButtons();
     try {
       viewer.processElements();
+      hardenDrawioDom(holder);
     } catch (err) {
       if (cancelled()) return;
       renderSourceFallback(`${t('渲染失败，已显示源码')}：${String(err?.message || err).slice(0, 80)}`);
